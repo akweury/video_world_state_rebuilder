@@ -18,15 +18,23 @@
 """
 
 import numpy as np
-from utils import pipe_utils
 
+
+from src.utils import pipe_utils
+from src.pipeline import step01
+from src import config
 
 def main():
-    pass 
+    # step 1: detect objects masks, labels, depths in
+    # each frame of the video, cache the results as intermediate files
+    args = pipe_utils.parse_args()
+    step01_input = config.get_step_01_input(args)
+    step01.main(step01_input)
+
+    return   
 
 
 if __name__ == "__main__":
-    print("------- Start the pipeline -------")
-    args = pipe_utils.parse_args()
+    print("\n------- Start the pipeline -------\n")
     res = main()
-    print(" ------- Program Finished! ------ ")
+    print("\n ------- Program Finished! ------ \n")

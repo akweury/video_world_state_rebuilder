@@ -8,15 +8,28 @@ import sys
 import time
 from pathlib import Path
 
-import config 
-
+from src import config 
+from src.utils import data_utils
 
 def parse_args():
     parser = argparse.ArgumentParser(
         description="Run the VWSR pipeline"
     )
-    
-    parser.add_argument("--data", type=int)
-    parser.add_argument("--data", type=int)
-    return parser.parse_args()
+
+    # Add arguments for the pipeline
+    parser.add_argument("--data_num", type=str, default="all", help="Number of data to process, default is all")
+
+    parser.add_argument("--dataset", type=str, default="bdd100k", choices=["bdd100k"])
+
+    parser.add_argument("--exp", type=str, default="debug", help="Experiment name, default is debug")
+
+    args = parser.parse_args()
+
+    # load experiment configuration
+    exp_config_path = config.exp_config_path / f"{args.exp}.json"
+    for key, value in data_utils.load_json(exp_config_path).items():
+        setattr(args, key, value)
+
+
+    return args
 
