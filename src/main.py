@@ -24,10 +24,14 @@ from src.utils import pipe_utils
 from src.pipeline import step01
 from src import config
 
+
+
 def main():
+    args = pipe_utils.parse_args()
+    # step 0: system check, and set up the environment
+    args = config.step_0_setup(args)
     # step 1: detect objects masks, labels, depths in
     # each frame of the video, cache the results as intermediate files
-    args = pipe_utils.parse_args()
     step01_input = config.get_step_01_input(args)
     step01.main(step01_input)
 

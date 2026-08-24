@@ -23,6 +23,9 @@ def parse_args():
 
     parser.add_argument("--exp", type=str, default="debug", help="Experiment name, default is debug")
 
+    parser.add_argument("--machine", type=str, default="ml-pulsar", help="Machine name, default is ml-pulsar")
+
+    parser.add_argument("--device", type=str, default="cuda:0", help="Device to use, default is cuda:0")
     args = parser.parse_args()
 
     # load experiment configuration
