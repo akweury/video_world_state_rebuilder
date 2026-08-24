@@ -21,7 +21,7 @@ import numpy as np
 
 
 from src.utils import pipe_utils
-from src.pipeline import step01
+from src.pipeline import step01, step02
 from src import config
 
 
@@ -35,6 +35,11 @@ def main():
     step01_input = config.get_step_01_input(args)
     step01.main(step01_input)
 
+    # step 2: estimate the 3D pose of each object in each frame.
+    step02_input = config.get_step_02_input(args)
+    step02.main(step02_input)
+
+    
     return   
 
 
