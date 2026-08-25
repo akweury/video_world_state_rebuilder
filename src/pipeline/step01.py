@@ -9,8 +9,8 @@ from src.pipeline.step01_od import DetectionTier, ObjectCandidate, load_od_model
 from src.pipeline.step01_mask import load_mask_model
 from src.pipeline.step01_depth import load_depth_model
 from src.pipeline.step01_flow import load_flow_model
-
-
+from src.pipeline.step01_tensor import load_packing_model
+from src.utils import data_utils
 def _video_to_frames(video_path, output_dir):
     """
     Convert a video into frames and save them as images in the output directory.
@@ -43,6 +43,7 @@ def _video_to_frames(video_path, output_dir):
     cap.release()
 
 def _frames_to_flows(frame_dir, output_dir, flow_model):
+    print(f"- frames to flows for video: {Path(frame_dir).name}")
     if os.path.exists(output_dir):
         return
 
@@ -70,7 +71,7 @@ def _frames_to_flows(frame_dir, output_dir, flow_model):
             return cv2.cvtColor(self.image_bgr, cv2.COLOR_BGR2RGB)
 
     def read_frame(frame_index, frame_path):
-        image_bgr = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+        image_bgr = data_utils.load_image_bgr(frame_path)
         if image_bgr is None:
             return None
         return Frame(Path(output_dir).name, frame_index, image_bgr)
@@ -129,6 +130,7 @@ def _frames_to_depths(frame_dir, output_dir, depth_model):
         output_dir (str): Directory where the estimated depth maps will be saved.
         depth_model: The depth estimation model to be used for predicting depth maps.
     """
+    print(f"- frames to depths for video: {Path(frame_dir).name}")
     if os.path.exists(output_dir):
         return
 
@@ -153,7 +155,7 @@ def _frames_to_depths(frame_dir, output_dir, depth_model):
             self.image_bgr = image_bgr
 
     def read_frame(frame_index, frame_path):
-        image_bgr = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+        image_bgr = data_utils.load_image_bgr(frame_path)
         if image_bgr is None:
             return None
         return Frame(Path(output_dir).name, frame_index, image_bgr)
@@ -176,7 +178,6 @@ def _frames_to_depths(frame_dir, output_dir, depth_model):
             ),
         )
 
-
 def _frames_to_objects(video_id, frame_dir, output_dir, od_model, batch_size=8):
     """
     use the object detection model to detect objects in each frame and save the results as json file.
@@ -186,6 +187,7 @@ def _frames_to_objects(video_id, frame_dir, output_dir, od_model, batch_size=8):
         output_dir (str): Directory where the detected objects will be saved.
         od_model: The object detection model to be used for detecting objects.
     """
+    print(f"- frames to objects for video: {video_id}")
     obj_file = Path(output_dir) / f"{video_id}_objects.json"
     if os.path.exists(obj_file):
         return
@@ -216,7 +218,7 @@ def _frames_to_objects(video_id, frame_dir, output_dir, od_model, batch_size=8):
         frames = []
         valid_paths = []
         for frame_path in batch_paths:
-            image_bgr = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+            image_bgr = data_utils.load_image_bgr(frame_path)
             if image_bgr is None:
                 continue
             frames.append(Frame(image_bgr))
@@ -242,7 +244,6 @@ def _frames_to_objects(video_id, frame_dir, output_dir, od_model, batch_size=8):
         import json
         json.dump(detections_by_frame, handle, indent=2)
 
-
 def _frames_to_masks(video_id,frame_dir, output_dir, mask_model):
     """
     use the mask model to detect masks in each frame and save the results as json file.
@@ -252,6 +253,7 @@ def _frames_to_masks(video_id,frame_dir, output_dir, mask_model):
         output_dir (str): Directory where the detected masks will be saved.
         mask_model: The mask model to be used for detecting masks.
     """
+    print(f"- frames to masks for video: {video_id}")
     mask_file = Path(output_dir) / f"{video_id}_masks.json"
     if os.path.exists(mask_file):
         return
@@ -297,7 +299,7 @@ def _frames_to_masks(video_id,frame_dir, output_dir, mask_model):
 
     results = []
     for frame_index, frame_path in enumerate(frame_paths):
-        image_bgr = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+        image_bgr = data_utils.load_image_bgr(frame_path)
         if image_bgr is None:
             continue
 
@@ -327,12 +329,54 @@ def _frames_to_masks(video_id,frame_dir, output_dir, mask_model):
     with open(mask_file, "w", encoding="utf-8") as handle:
         json.dump(results, handle, indent=2)
 
+def _frames_to_dicts(video_id, frame_dir, depth_dir, flow_dir, obj_dir, mask_dir, output_dir, tensor_model):
+    print(f"- frames to dicts for video: {video_id}")
+    """
+    Convert the processed frames, depth maps, flow maps, object detections, 
+    and masks into a dict format
+    """
+    tensor_model.warmup()
+    context = tensor_model.prepare_video(
+        video_id=video_id,
+        frame_dir=frame_dir,
+        depth_dir=depth_dir,
+        flow_dir=flow_dir,
+        obj_dir=obj_dir,
+        mask_dir=mask_dir,
+        output_dir=output_dir,
+    )
+
+    if context.get("already_packed"):
+        return []
+
+    frame_tensors = []
+    for frame_index, frame_path in enumerate(context.get("frame_paths", [])):
+        frame_record = tensor_model.pack_frame(
+            frame_index=frame_index,
+            frame_path=frame_path,
+            depth_dir=context.get("depth_dir", depth_dir),
+            flow_dir=context.get("flow_dir", flow_dir),
+            obj_dir=context.get("obj_dir", obj_dir),
+            mask_dir=context.get("mask_dir", mask_dir),
+            output_dir=output_dir,
+            objects_by_frame=context.get("objects_by_frame", {}),
+            masks_by_frame=context.get("masks_by_frame", {}),
+            flow_frames=context.get("flow_frames", []),
+        )
+        if frame_record is not None:
+            frame_tensors.append(frame_record)
+
+    return tensor_model.finalize_video(context["dict_path"], frame_tensors)
+
+
+
 def main(input_data):
     print("\n------- Step 01 -------\n")
     od_model = load_od_model(input_data)
     mask_model = load_mask_model(input_data)
     depth_model = load_depth_model(input_data)
     flow_model = load_flow_model(input_data)
+    packing_model = load_packing_model(input_data)
     all_video_ids = input_data["video_ids"]
     all_video_paths = input_data["video_path"]
     all_frame_paths = input_data["frame_path"]
@@ -342,30 +386,23 @@ def main(input_data):
 
     obj_dir = output_dir / "objects"
     mask_dir = output_dir / "masks"
+    record_dir = output_dir / "records"
     os.makedirs(obj_dir, exist_ok=True)
     os.makedirs(mask_dir, exist_ok=True)
+    os.makedirs(record_dir, exist_ok=True)
 
     print(f"- Total Processed Videos: {len(all_video_paths)}")
-    for v_path,f_path in tqdm(zip(all_video_paths, all_frame_paths), 
-                                            desc="video to frames", total=len(all_video_paths)):
+    for vid, v_path, f_path, d_path, flow_path in tqdm(zip(all_video_ids, all_video_paths, all_frame_paths, all_depth_paths, all_flow_paths),
+                                            desc="frames to objects/masks/depths/flows", total=len(all_video_ids)):
         _video_to_frames(v_path, f_path)
-
-    for vid, f_path in tqdm(zip(all_video_ids, all_frame_paths), 
-                            desc="frames to objects", total=len(all_video_ids)):
         _frames_to_objects(vid, f_path, obj_dir, od_model)
-
-    for vid, f_path in tqdm(zip(all_video_ids, all_frame_paths),
-                            desc="frames to masks", total=len(all_video_ids)):
         _frames_to_masks(vid, f_path, mask_dir, mask_model)
-
-    for f_path, d_path in tqdm(zip(all_frame_paths, all_depth_paths),
-                                    desc="frames to depths", total=len(all_frame_paths)):
         _frames_to_depths(f_path, d_path, depth_model)
-
-    for f_path, flow_path in tqdm(zip(all_frame_paths, all_flow_paths),
-                                    desc="frames to flows", total=len(all_frame_paths)):
         _frames_to_flows(f_path, flow_path, flow_model)
+        _frames_to_dicts(vid, f_path, d_path, flow_path, obj_dir, mask_dir, record_dir, packing_model)
 
+
+     
     print("\n--------- Step 01 Done ---------------\n")
 
     
