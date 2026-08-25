@@ -14,6 +14,7 @@ print(f"\n##### Root path: {root}\n")
 
 exp_config_path = root / "experiments"
 
+
 # -------------- Inputs --------------
 def step_0_setup(args):
     # get the dataset phyiscal path
@@ -96,7 +97,6 @@ def get_step_01_input(args):
         all_video_ids = all_video_ids[:data_num]
         all_flow_paths = all_flow_paths[:data_num]
 
-
     output_dir = args.output_dir / "step01_output"
     os.makedirs(output_dir, exist_ok=True)
     input_data = {
@@ -135,7 +135,6 @@ def get_step_02_input(args):
         "output_dir": output_dir,
         "device": args.device,
         "step01_output_dir": args.output_dir / "step01_output",
-        
     }
     return input_data
 

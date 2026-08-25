@@ -1,5 +1,28 @@
 
-
+def load_step01_output(step01_output_dir):
+    """ 
+    Load the output data from step 1,
+    which includes masks, object labels, depth maps, flow maps,
+    and bounding boxes for each frame in the video.
+    The returned data structure is a list of dicts,
+    where each dict corresponds to a frame and contains:
+    - frame_id: the identifier of the frame
+    - objects: a list of detected objects in the frame
+    - masks: a list of masks corresponding to the detected objects
+    - depths: a list of depth maps corresponding to the detected objects
+    - flows: a list of flow maps corresponding to the detected objects
+    - bboxes: a list of bounding boxes corresponding to the detected objects
+    """
+    step01_output_data = []
+    
+    
+    
+    
+    
+    
+    
+    return step01_output_data
+    
 def main(input_data):
     print("\n------- Step 02 -------\n")
     output_dir = input_data["output_dir"]
