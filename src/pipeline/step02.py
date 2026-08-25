@@ -140,7 +140,7 @@ def _track_video(video_id, frames, output_dir):
     frame_name_by_index = {frame_index: frame_record.get("frame_name", frame_record.get("frame_id", f"frame_{frame_index:05d}")) for frame_index, frame_record in enumerate(frames)}
     serialized_tracks = _serialize_tracks(tracks, frame_name_by_index, track_path)
     _save_tracks_summary(video_id, serialized_tracks, output_dir)
-    
+
     return serialized_tracks
     
 def main(input_data):
@@ -155,7 +155,5 @@ def main(input_data):
     # id connections based on the step 1 output data
     for video_data in step01_output_data:
         _track_video(video_data["video_id"], video_data["frames"], output_dir)
-
-
-        
+                
     print(f"\n ------------------ Step 02 Finished! ------------------ \n")

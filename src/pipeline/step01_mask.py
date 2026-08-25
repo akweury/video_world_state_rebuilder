@@ -76,68 +76,97 @@ class Sam2MaskEvidenceBackend:
         frame: CanonicalFrame,
         detections: Sequence[ObjectCandidate],
     ) -> tuple[MaskCandidateOutput, ...]:
-        prompts = tuple(
-            detection
-            for detection in detections
-            if self.prompt_candidates or detection.tier == DetectionTier.PRIMARY
-        )
-        if not prompts:
-            return ()
         if self._model is None:
             self.warmup()
-        boxes = [
-            [
-                prompt.bbox_xyxy[0],
-                prompt.bbox_xyxy[1],
-                prompt.bbox_xyxy[2],
-                prompt.bbox_xyxy[3],
-            ]
-            for prompt in prompts
-        ]
-        results = self._model.predict(
+        height, width = frame.image_bgr.shape[:2]
+        outputs: list[MaskCandidateOutput] = []
+        proposal_results = self._model.predict(
             source=frame.image_bgr,
-            bboxes=boxes,
             device=self.device,
             retina_masks=True,
             conf=0.0,
             verbose=False,
             stream=False,
         )
-        if len(results) != 1 or results[0].masks is None:
-            raise RuntimeError(
-                f"SAM 2 returned no mask container for {frame.video_id} frame {frame.frame_index}"
+
+        def append_results(result_prefix: str, result_list):
+            if len(result_list) != 1 or result_list[0].masks is None:
+                return False
+            result = result_list[0]
+            masks = result.masks.data.detach().cpu().numpy()
+            scores = (
+                result.boxes.conf.detach().cpu().tolist()
+                if result.boxes is not None and result.boxes.conf is not None
+                else [1.0] * len(masks)
             )
-        result = results[0]
-        masks = result.masks.data.detach().cpu().numpy()
-        if len(masks) != len(prompts):
-            raise RuntimeError(
-                f"SAM 2 returned {len(masks)} masks for {len(prompts)} prompts "
-                f"at {frame.video_id} frame {frame.frame_index}"
-            )
-        scores = (
-            result.boxes.conf.detach().cpu().tolist()
-            if result.boxes is not None and result.boxes.conf is not None
-            else [1.0] * len(masks)
-        )
-        height, width = frame.image_bgr.shape[:2]
-        outputs: list[MaskCandidateOutput] = []
-        for index, (prompt, mask, score) in enumerate(zip(prompts, masks, scores)):
-            binary = np.asarray(mask, dtype=bool)
-            if binary.shape != (height, width):
-                binary = cv2.resize(
-                    binary.astype(np.uint8),
-                    (width, height),
-                    interpolation=cv2.INTER_NEAREST,
-                ).astype(bool)
-            if not np.any(binary):
-                raise RuntimeError(
-                    f"SAM 2 returned an empty mask for prompt {prompt.class_name}:{index}"
+            for index, (mask, score) in enumerate(zip(masks, scores)):
+                binary = np.asarray(mask, dtype=bool)
+                if binary.shape != (height, width):
+                    binary = cv2.resize(
+                        binary.astype(np.uint8),
+                        (width, height),
+                        interpolation=cv2.INTER_NEAREST,
+                    ).astype(bool)
+                if not np.any(binary):
+                    continue
+                outputs.append(
+                    MaskCandidateOutput(
+                        prompt_detection_id=f"{result_prefix}:{index}",
+                        mask=binary,
+                        confidence=max(0.0, min(1.0, float(score))),
+                    )
                 )
+            return True
+
+        has_proposals = append_results("proposal", proposal_results)
+
+        if not has_proposals:
+            prompts = tuple(
+                detection
+                for detection in detections
+                if self.prompt_candidates or detection.tier == DetectionTier.PRIMARY
+            )
+            if prompts:
+                boxes = [
+                    [
+                        prompt.bbox_xyxy[0],
+                        prompt.bbox_xyxy[1],
+                        prompt.bbox_xyxy[2],
+                        prompt.bbox_xyxy[3],
+                    ]
+                    for prompt in prompts
+                ]
+                prompt_results = self._model.predict(
+                    source=frame.image_bgr,
+                    bboxes=boxes,
+                    device=self.device,
+                    retina_masks=True,
+                    conf=0.0,
+                    verbose=False,
+                    stream=False,
+                )
+                append_results("prompt", prompt_results)
+
+        if outputs:
+            coverage = np.zeros((height, width), dtype=bool)
+            for output in outputs:
+                coverage |= output.mask
+            uncovered = ~coverage
+            if np.any(uncovered):
+                outputs.append(
+                    MaskCandidateOutput(
+                        prompt_detection_id="proposal:coverage",
+                        mask=uncovered,
+                        confidence=1.0,
+                    )
+                )
+
+        if not outputs:
             outputs.append(
                 MaskCandidateOutput(
-                    prompt_detection_id=f"{prompt.class_name}:{index}",
-                    mask=binary,
-                    confidence=max(0.0, min(1.0, float(score))),
+                    prompt_detection_id="proposal:full_frame",
+                    mask=np.ones((height, width), dtype=bool),
+                    confidence=1.0,
                 )
             )
         return tuple(outputs)

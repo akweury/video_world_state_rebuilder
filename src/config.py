@@ -136,5 +136,6 @@ def get_step_02_input(args):
         "device": args.device,
         "step01_output_dir": args.output_dir / "step01_output",
     }
+    
     return input_data
 
