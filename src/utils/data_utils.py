@@ -88,7 +88,7 @@ def load_image_bgr(frame_path):
 
     labels_path = _find_labels_csv(frame_path)
     if labels_path is None:
-        return image_bgr
+        raise ValueError(f"Could not find labels.csv for frame: {frame_path}")
 
     rotation_map = _load_label_rotation_map(labels_path)
     rotation = rotation_map.get(frame_path.name)
@@ -122,6 +122,6 @@ def load_npz_dict(npz_path):
 def load_json_list(json_path):
     json_path = Path(json_path)
     if not json_path.exists():
-        return []
+        raise ValueError(f"JSON file does not exist: {json_path}")
     with json_path.open("r", encoding="utf-8") as handle:
         return json.load(handle)

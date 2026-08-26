@@ -105,20 +105,22 @@ def setup_depth_anything_v3():
         ):
             print(f"⚠️ Failed to install {dep}, continuing...")
     
-    # Install the package in editable mode without strict dependency checking
+    # Install the package using the pyproject build backend.
+    # The upstream repository does not ship setup.py/setup.cfg, so editable
+    # installs fail with older pip versions even when the source tree is valid.
     print("📦 Installing Depth Anything V3...")
     if not run_command(
-        "pip install -e . --no-deps",
+        "pip install . --no-deps",
         cwd=DEPTH_ANYTHING_DIR,
         description="Installing Depth Anything V3 (without dependencies)"
     ):
-        print("⚠️ Failed to install with --no-deps, trying regular install...")
+        print("⚠️ Failed to install without dependencies, trying regular install...")
         if not run_command(
-            "pip install -e .",
+            "pip install .",
             cwd=DEPTH_ANYTHING_DIR,
             description="Installing Depth Anything V3 (with dependencies)"
         ):
-            return False
+            print("⚠️ Package install failed, but the source tree is present and importable via sys.path.")
     
     print("\n" + "="*60)
     print("✅ Depth Anything V3 setup complete!")

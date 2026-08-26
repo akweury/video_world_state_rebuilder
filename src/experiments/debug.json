@@ -1,6 +1,6 @@
 {
     "data_num": "1",
-    "bdd100k_frame_rate": 5,
+    "bdd100k_frame_rate": 30,
     "primary_confidence": 0.3,
     "candidate_confidence": 0.05,
     "nms_iou": 0.5,

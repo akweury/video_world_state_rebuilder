@@ -3,6 +3,7 @@ import json
 import pickle
 from pathlib import Path
 
+import cv2
 import numpy as np
 
 from src.utils.association import FrameDetection, FrameDetections, track_objects_across_frames
@@ -43,26 +44,43 @@ def load_step01_output(step01_output_dir):
 
 
 def _frame_record_to_detections(frame_record, frame_index):
-    objects = frame_record.get("objects", [])
-    masks = frame_record.get("masks", [])
+    objects = frame_record["objects"]
+    masks = frame_record["masks"]
     detections = []
+
+    def load_mask(mask_path):
+        mask_path = Path(mask_path)
+        if mask_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}:
+            mask_image = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if mask_image is None:
+                return None
+            return mask_image > 0
+        if mask_path.suffix.lower() in {".npy", ".npz"}:
+            loaded = np.load(mask_path, allow_pickle=False)
+            if isinstance(loaded, np.lib.npyio.NpzFile):
+                if not loaded.files:
+                    return None
+                first_key = loaded.files[0]
+                return np.asarray(loaded[first_key])
+            return np.asarray(loaded)
+        return None
+
     for detection_index, obj in enumerate(objects):
-        bbox_xyxy = obj.get("bbox_xyxy")
-        class_name = obj.get("class_name")
+        bbox_xyxy = obj["bbox_xyxy"]
+        class_name = obj["class_name"]
         if bbox_xyxy is None or class_name is None:
             continue
-        mask = None
-        if detection_index < len(masks):
-            mask = _to_numpy(masks[detection_index].get("mask"))
-            if mask is not None:
-                mask = mask.astype(bool)
+        mask_path = masks[detection_index]["mask_path"]
+        mask = load_mask(mask_path)
+        if mask is None:
+            continue
         detections.append(
             FrameDetection(
                 detection_id=f"frame:{frame_index:06d}:det:{detection_index:04d}",
                 bbox_xyxy=tuple(float(value) for value in bbox_xyxy),
-                mask=mask,
+                mask_array=mask,
                 class_name=str(class_name),
-                confidence=float(obj.get("confidence", 0.0)),
+                confidence=float(obj["confidence"]),
             )
         )
     return FrameDetections(frame_index=frame_index, detections=tuple(detections))
@@ -126,15 +144,15 @@ def _track_video(tracker_model, video_data, output_dir, window_size=5):
     video_id = video_data["video_id"]
     frames = video_data["frames"]
     
-    track_path = output_dir / f"{video_id}_tracks.pkl"
-    if os.path.exists(track_path):
+    track_file = output_dir / f"{video_id}_tracks.pkl"
+    if os.path.exists(track_file):
         print(f"Tracks for video {video_id} already exist. Skipping tracking.")
         return
     output_dir.mkdir(parents=True, exist_ok=True)
     
     frame_detections = [_frame_record_to_detections(frame_record, frame_index) for frame_index, frame_record in enumerate(frames)]
-    frame_depth = [frame_record.get("depths", []) for frame_record in frames]   
-    frame_flows = [frame_record.get("flows", []) for frame_record in frames]
+    frame_depth = [frame_record["depth"] for frame_record in frames]   
+    frame_flows = [frame_record["flows"] for frame_record in frames]
     # Track objects across frames using the tracker model
     for start in range(0, len(frame_detections), window_size):
         end = min(start + window_size, len(frame_detections))

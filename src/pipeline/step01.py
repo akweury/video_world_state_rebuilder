@@ -214,7 +214,85 @@ def _draw_frame_mask_visual(frame_bgr, detections, outputs, output_path, top_k: 
 
     composed = cv2.addWeighted(overlay, 1.0, canvas, 0.25, 0.0)
     cv2.imwrite(str(output_path), composed)
+def _video_to_low_fps_frames(frame_rate, frame_paths):
+    if frame_rate <= 0:
+        raise ValueError("Frame rate must be a positive integer.")
+    
+    low_frame_paths = [
+        Path(frame_path) for index, frame_path in enumerate(frame_paths) if index % frame_rate == 0
+    ]
+    return low_frame_paths
 
+
+def _rotate_frame_by_meta(frame, rotation_meta: float):
+    rotation = int(round(rotation_meta)) % 360
+    if rotation == 90:
+        return cv2.rotate(frame, cv2.ROTATE_90_CLOCKWISE)
+    if rotation == 180:
+        return cv2.rotate(frame, cv2.ROTATE_180)
+    if rotation == 270:
+        return cv2.rotate(frame, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    return frame
+
+
+def _read_video_rotation_meta(video_path) -> float:
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            return 0.0
+        rotation_meta = cap.get(cv2.CAP_PROP_ORIENTATION_META)
+        if rotation_meta is None:
+            return 0.0
+        return float(rotation_meta)
+    finally:
+        cap.release()
+
+
+def _read_video_first_frame_shape(video_path):
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        if not cap.isOpened():
+            return None
+        ret, frame = cap.read()
+        if not ret or frame is None:
+            return None
+        return frame.shape[:2]
+    finally:
+        cap.release()
+
+
+def _ensure_rotated_frame_directory(video_path, output_dir):
+    output_dir = Path(output_dir)
+    frame_paths = sorted(
+        path for path in output_dir.iterdir()
+        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
+    )
+    if not frame_paths:
+        return frame_paths
+
+    rotation_meta = _read_video_rotation_meta(video_path)
+    rotation = int(round(rotation_meta)) % 360
+    if rotation not in {90, 270}:
+        return frame_paths
+
+    sample_frame = cv2.imread(str(frame_paths[0]), cv2.IMREAD_COLOR)
+    if sample_frame is None:
+        return frame_paths
+
+    raw_shape = _read_video_first_frame_shape(video_path)
+    if raw_shape is None:
+        return frame_paths
+
+    if sample_frame.shape[:2] == raw_shape:
+        # The folder appears to contain unrotated frames, so rewrite them in place.
+        for frame_path in frame_paths:
+            image_bgr = cv2.imread(str(frame_path), cv2.IMREAD_COLOR)
+            if image_bgr is None:
+                continue
+            corrected = _rotate_frame_by_meta(image_bgr, rotation)
+            cv2.imwrite(str(frame_path), corrected)
+
+    return frame_paths
 
 def _video_to_frames(video_path, output_dir):
     """
@@ -227,11 +305,7 @@ def _video_to_frames(video_path, output_dir):
         All frames path in the output directory.
     """
     if os.path.exists(output_dir):
-        # return all the frame file paths in the output directory
-        return sorted(
-            path for path in Path(output_dir).iterdir()
-            if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
-        )
+        return _ensure_rotated_frame_directory(video_path, output_dir)
 
     # Create the output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -240,10 +314,14 @@ def _video_to_frames(video_path, output_dir):
     cap = cv2.VideoCapture(video_path)
     
     frame_count = 0
+    rotation_meta = _read_video_rotation_meta(video_path)
+
     while True:
         ret, frame = cap.read()
         if not ret:
             break
+
+        frame = _rotate_frame_by_meta(frame, rotation_meta)
         
         # Save the frame as an image
         frame_filename = os.path.join(output_dir, f"frame_{frame_count:04d}.png")
@@ -257,8 +335,8 @@ def _video_to_frames(video_path, output_dir):
         if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
     )
 
-def _frames_to_flows(frame_dir, output_dir, flow_model):
-    print(f"- frames to flows for video: {Path(frame_dir).name}")
+def _frames_to_flows(frame_rate, frame_paths, output_dir, flow_model):
+    print(f"- frames to flows for video: {Path(frame_paths[0]).parent.name}")
     if os.path.exists(output_dir):
         # return all the frame file paths in the output directory
         return sorted(
@@ -271,7 +349,7 @@ def _frames_to_flows(frame_dir, output_dir, flow_model):
     flow_model.warmup()
 
     frame_paths = sorted(
-        path for path in Path(frame_dir).iterdir()
+        path for path in frame_paths
         if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
     )
     if len(frame_paths) < 2:
@@ -301,7 +379,10 @@ def _frames_to_flows(frame_dir, output_dir, flow_model):
     if previous is None:
         return
 
-    for frame_index, frame_path in enumerate(frame_paths[1:], start=1):
+    for frame_index, frame_path in enumerate(
+        tqdm(frame_paths[1:], desc=f"flows {Path(output_dir).name}", total=max(0, len(frame_paths) - 1)),
+        start=1,
+    ):
         current = read_frame(frame_index, frame_path)
         if current is None:
             continue
@@ -341,16 +422,17 @@ def _frames_to_flows(frame_dir, output_dir, flow_model):
     with open(Path(output_dir) / "flows.json", "w", encoding="utf-8") as handle:
         json.dump(results, handle, indent=2)
 
-def _frames_to_depths(frame_dir, output_dir, depth_model):
+def _frames_to_depths(frame_rate, frame_paths, output_dir, depth_model):
     """
     use depth anything v3 to estimate the depth maps for each frame in the given directory.
     
     Args:
-        frame_dir (str): Directory containing the frames for which depth maps will be estimated.
+        frame_rate (int): The frame rate at which frames were sampled.
+        frame_paths (list[str]): List of paths to the frames for which depth maps will be estimated.
         output_dir (str): Directory where the estimated depth maps will be saved.
         depth_model: The depth estimation model to be used for predicting depth maps.
     """
-    print(f"- frames to depths for video: {Path(frame_dir).name}")
+    print(f"- frames to depths for video: {Path(frame_paths[0]).parent.name}")
     if os.path.exists(output_dir):
         return
 
@@ -359,7 +441,7 @@ def _frames_to_depths(frame_dir, output_dir, depth_model):
     depth_model.warmup()
 
     frame_paths = sorted(
-        path for path in Path(frame_dir).iterdir()
+        path for path in frame_paths
         if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
     )
     if not frame_paths:
@@ -373,6 +455,9 @@ def _frames_to_depths(frame_dir, output_dir, depth_model):
             self.source_frame_index = frame_index
             self.source_timestamp_s = 0.0
             self.image_bgr = image_bgr
+        @property
+        def image_rgb(self):
+            return cv2.cvtColor(self.image_bgr, cv2.COLOR_BGR2RGB)
 
     def read_frame(frame_index, frame_path):
         image_bgr = data_utils.load_image_bgr(frame_path)
@@ -380,7 +465,9 @@ def _frames_to_depths(frame_dir, output_dir, depth_model):
             return None
         return Frame(Path(output_dir).name, frame_index, image_bgr)
 
-    for frame_index, frame_path in enumerate(frame_paths):
+    for frame_index, frame_path in enumerate(
+        tqdm(frame_paths, desc=f"depths {Path(output_dir).name}", total=len(frame_paths))
+    ):
         frame = read_frame(frame_index, frame_path)
         if frame is None:
             continue
@@ -398,24 +485,24 @@ def _frames_to_depths(frame_dir, output_dir, depth_model):
             ),
         )
 
-def _frames_to_objects(video_id, frame_dir, output_dir, od_model, batch_size=8):
+def _frames_to_objects(video_id, frame_rate, frame_paths, output_dir, od_model, batch_size=8):
     """
     use the object detection model to detect objects in each frame and save the results as json file.
     
     Args:
-        frame_dir (str): Directory containing the frames for object detection.
+        frame_paths (list[str]): List of paths to the frames for object detection.
         output_dir (str): Directory where the detected objects will be saved.
         od_model: The object detection model to be used for detecting objects.
     """
     print(f"- frames to objects for video: {video_id}")
-    obj_file = Path(output_dir) / f"{video_id}_objects.json"
+    obj_file = Path(output_dir) / f"{video_id}_fps_{frame_rate}_objects.json"
     if os.path.exists(obj_file):
         return
     od_model.warmup()
 
     frame_paths = sorted(
-        path for path in Path(frame_dir).iterdir()
-        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
+        path for path in frame_paths
+        if Path(path).suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
     )
     if not frame_paths:
         return
@@ -464,21 +551,21 @@ def _frames_to_objects(video_id, frame_dir, output_dir, od_model, batch_size=8):
         import json
         json.dump(detections_by_frame, handle, indent=2)
 
-def _frames_to_masks(video_id, frame_paths, output_dir, mask_model, label_top_k: int = 3):
+def _frames_to_masks(video_id,frame_rate, frame_paths, output_dir, mask_model, label_top_k: int = 3):
     """
     use the mask model to detect masks in each frame and save the results as json file.
     
     Args:
-        frame_dir (str): Directory containing the frames for mask detection.
+        frame_paths (list[str]): List of paths to the frames for mask detection.
         output_dir (str): Directory where the detected masks will be saved.
         mask_model: The mask model to be used for detecting masks.
     """
     print(f"- frames to masks for video: {video_id}")
-    mask_file = Path(output_dir) / f"{video_id}_masks.json"
+    mask_file = Path(output_dir) / f"{video_id}_fps_{frame_rate}_masks.json"
     if os.path.exists(mask_file):
         return
     mask_model.warmup()
-    objects_json = data_utils.load_json(Path(output_dir).parent / "objects" / f"{video_id}_objects.json")
+    objects_json = data_utils.load_json(Path(output_dir).parent / "objects" / f"{video_id}_fps_{frame_rate}_objects.json")
     detections_by_frame = {entry["frame"]: entry.get("objects", []) for entry in objects_json}
     
     class Frame:
@@ -507,7 +594,9 @@ def _frames_to_masks(video_id, frame_paths, output_dir, mask_model, label_top_k:
     mask_output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []
-    for frame_index, frame_path in enumerate(frame_paths):
+    for frame_index, frame_path in enumerate(
+        tqdm(frame_paths, desc=f"masks {video_id}", total=len(frame_paths))
+    ):
         image_bgr = data_utils.load_image_bgr(frame_path)
         if image_bgr is None:
             continue
@@ -528,9 +617,9 @@ def _frames_to_masks(video_id, frame_paths, output_dir, mask_model, label_top_k:
                 {
                     "prompt_detection_id": output.prompt_detection_id,
                     "confidence": float(output.confidence),
-                    "label": label_candidates[0]["label"] if label_candidates else None,
+                    "label": label_candidates[0]["label"],
                     "label_candidates": label_candidates,
-                    "mask_path": str(mask_path.relative_to(Path(output_dir).parent)),
+                    "mask_path": str(mask_path),
                     "mask_pixels": int(np.count_nonzero(output.mask)),
                 }
             )
@@ -538,12 +627,12 @@ def _frames_to_masks(video_id, frame_paths, output_dir, mask_model, label_top_k:
         visual_path = frame_mask_dir / "masks_visual.png"
         _draw_frame_mask_visual(image_bgr, detections, outputs, visual_path, label_top_k)
         for entry in frame_results:
-            entry["visual_path"] = str(visual_path.relative_to(Path(output_dir).parent))
+            entry["visual_path"] = str(visual_path)
 
         results.append({"frame": frame_path.name, "masks": frame_results})
     data_utils.save_json(results, mask_file)
 
-def _frames_to_records(video_id, frame_dir, depth_dir, flow_dir, obj_dir, mask_dir, output_dir, tensor_model):
+def _frames_to_records(video_id, frame_rate, frame_paths, depth_dir, flow_dir, obj_dir, mask_dir, output_dir, tensor_model):
     print(f"- frames to dicts for video: {video_id}")
     """
     Convert the processed frames, depth maps, flow maps, object detections, 
@@ -552,7 +641,8 @@ def _frames_to_records(video_id, frame_dir, depth_dir, flow_dir, obj_dir, mask_d
     tensor_model.warmup()
     context = tensor_model.prepare_video(
         video_id=video_id,
-        frame_dir=frame_dir,
+        frame_rate=frame_rate,
+        frame_paths=frame_paths,
         depth_dir=depth_dir,
         flow_dir=flow_dir,
         obj_dir=obj_dir,
@@ -564,14 +654,14 @@ def _frames_to_records(video_id, frame_dir, depth_dir, flow_dir, obj_dir, mask_d
         return []
 
     frame_tensors = []
-    for frame_index, frame_path in enumerate(context.get("frame_paths", [])):
+    for frame_path in context.get("frame_paths", []):
         frame_record = tensor_model.pack_frame(
-            frame_index=frame_index,
+            video_id=video_id,
             frame_path=frame_path,
-            depth_dir=context.get("depth_dir", depth_dir),
-            flow_dir=context.get("flow_dir", flow_dir),
-            obj_dir=context.get("obj_dir", obj_dir),
-            mask_dir=context.get("mask_dir", mask_dir),
+            depth_dir=depth_dir,
+            flow_dir=flow_dir,
+            obj_dir=obj_dir,
+            mask_dir= mask_dir,
             output_dir=output_dir,
             objects_by_frame=context.get("objects_by_frame", {}),
             masks_by_frame=context.get("masks_by_frame", {}),
@@ -598,6 +688,7 @@ def main(input_data):
     all_depth_paths = input_data["depth_path"]
     all_flow_paths = input_data["flow_path"]
     output_dir = input_data["output_dir"]
+    frame_rate = input_data["bdd100k_frame_rate"]
 
     obj_dir = output_dir / "objects"
     mask_dir = output_dir / "masks"
@@ -607,14 +698,14 @@ def main(input_data):
     os.makedirs(record_dir, exist_ok=True)
 
     print(f"- Total Processed Videos: {len(all_video_paths)}")
-    for vid, v_path, f_path, d_path, flow_path in tqdm(zip(all_video_ids, all_video_paths, all_frame_paths, all_depth_paths, all_flow_paths),
-                                            desc="frames to objects/masks/depths/flows", total=len(all_video_ids)):
+    for vid, v_path, f_path, d_path, flow_path in zip(all_video_ids, all_video_paths, all_frame_paths, all_depth_paths, all_flow_paths):
         frame_paths = _video_to_frames(v_path, f_path)
-        _frames_to_objects(vid, f_path, obj_dir, od_model)
-        _frames_to_masks(vid, frame_paths, mask_dir, mask_model, mask_label_top_k)
-        _frames_to_depths(f_path, d_path, depth_model)
-        _frames_to_flows(f_path, flow_path, flow_model)
-        _frames_to_records(vid, f_path, d_path, flow_path, obj_dir, mask_dir, record_dir, packing_model)
+        low_fps_frame_paths = _video_to_low_fps_frames(frame_rate, frame_paths)
+        _frames_to_objects(vid, frame_rate, low_fps_frame_paths, obj_dir, od_model)
+        _frames_to_masks(vid, frame_rate, low_fps_frame_paths, mask_dir, mask_model, mask_label_top_k)
+        _frames_to_depths(frame_rate, low_fps_frame_paths, d_path, depth_model)
+        _frames_to_flows(frame_rate, low_fps_frame_paths, flow_path, flow_model)
+        _frames_to_records(vid, frame_rate, low_fps_frame_paths, d_path, flow_path, obj_dir, mask_dir, record_dir, packing_model)
 
 
      

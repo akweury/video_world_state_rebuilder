@@ -38,8 +38,6 @@ def main():
     # step 2: estimate the 3D pose of each object in each frame.
     step02_input = config.get_step_02_input(args)
     step02.main(step02_input)
-
-    
     return   
 
 

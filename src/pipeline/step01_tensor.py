@@ -9,7 +9,7 @@ import torch
 from src.utils import data_utils
 
 
-class TensorPackingModel:
+class RecordPackingModel:
     """Pack the already-generated step 01 artifacts into frame-aligned tensors."""
 
     backend_name = "tensor_packer"
@@ -34,20 +34,12 @@ class TensorPackingModel:
         if isinstance(value, torch.Tensor):
             return value.detach().cpu()
         if isinstance(value, dict):
-            return {key: TensorPackingModel._to_cpu(item) for key, item in value.items()}
+            return {key: RecordPackingModel._to_cpu(item) for key, item in value.items()}
         if isinstance(value, list):
-            return [TensorPackingModel._to_cpu(item) for item in value]
+            return [RecordPackingModel._to_cpu(item) for item in value]
         if isinstance(value, tuple):
-            return tuple(TensorPackingModel._to_cpu(item) for item in value)
+            return tuple(RecordPackingModel._to_cpu(item) for item in value)
         return value
-
-    @staticmethod
-    def _frame_paths(frame_dir: str | Path) -> list[Path]:
-        frame_dir = Path(frame_dir)
-        return sorted(
-            path for path in frame_dir.iterdir()
-            if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
-        )
 
     @staticmethod
     def _frame_tensor(image_bgr: np.ndarray, device: torch.device) -> torch.Tensor:
@@ -76,7 +68,8 @@ class TensorPackingModel:
     def prepare_video(
         self,
         video_id: str,
-        frame_dir: str | Path,
+        frame_rate: int,
+        frame_paths: list[str] | list[Path],
         depth_dir: str | Path,
         flow_dir: str | Path,
         obj_dir: str | Path,
@@ -87,10 +80,9 @@ class TensorPackingModel:
         output_dir.mkdir(parents=True, exist_ok=True)
 
         dict_path = output_dir / f"{video_id}_step01.pkl"
-        frame_paths = self._frame_paths(frame_dir)
-        object_file = Path(obj_dir) / f"{video_id}_objects.json"
-        mask_file = Path(mask_dir) / f"{video_id}_masks.json"
-        flow_file = Path(flow_dir) / "flows.json"
+        object_file = Path(obj_dir) / f"{video_id}_fps_{frame_rate}_objects.json"
+        mask_file = Path(mask_dir) / f"{video_id}_fps_{frame_rate}_masks.json"
+        flow_file = Path(flow_dir) / f"flows.json"
 
         object_frames = data_utils.load_json_list(object_file)
         mask_frames = data_utils.load_json_list(mask_file)
@@ -102,7 +94,7 @@ class TensorPackingModel:
             if entry.get("frame")
         }
         masks_by_frame = {
-            entry.get("frame"): entry.get("masks", [])
+            entry.get("frame"): entry["masks"]
             for entry in mask_frames
             if entry.get("frame")
         }
@@ -123,7 +115,7 @@ class TensorPackingModel:
     def pack_frame(
         self,
         *,
-        frame_index: int,
+        video_id: str,
         frame_path: str | Path,
         depth_dir: str | Path,
         flow_dir: str | Path,
@@ -139,11 +131,11 @@ class TensorPackingModel:
         if frame_bgr is None:
             return None
 
-        depth_path = Path(depth_dir) / f"{frame_path.stem}_depth.npz"
+        depth_path = Path(depth_dir) / f"{frame_path.stem}.npz"
         depth_data = self._npz_to_tensors(data_utils.load_npz_dict(depth_path))
 
-        objects = objects_by_frame.get(frame_path.name, [])
-        mask_entries = masks_by_frame.get(frame_path.name, [])
+        objects = objects_by_frame[frame_path.name]
+        mask_entries = masks_by_frame[frame_path.name]
 
         incoming_flows = []
         outgoing_flows = []
@@ -175,23 +167,30 @@ class TensorPackingModel:
 
         frame_masks = []
         for mask_entry in mask_entries:
-            mask_path = Path(mask_dir).parent / mask_entry.get("mask_path", "")
+            mask_path = Path(mask_dir) / video_id / mask_entry.get("mask_path", "")
             frame_masks.append(
                 {
                     **mask_entry,
                     "mask": self._load_mask(mask_path),
                 }
             )
-
+        frame_index = int(frame_path.stem.split("_")[-1]) if "_" in frame_path.stem else 0
+        # check if any data is empty; if so, raise an error
+        if depth_data is None:
+            raise ValueError(f"Depth data is missing for frame: {frame_path}")
+        if not incoming_flows and not outgoing_flows:
+            raise ValueError(f"Flow data is missing for frame: {frame_path}")
+        if not frame_masks:
+            raise ValueError(f"Mask data is missing for frame: {frame_path}")
+        if frame_bgr is None:
+            raise ValueError(f"Frame image is missing or could not be loaded: {frame_path}")
         return {
             "frame_id": frame_path.stem,
             "frame_index": frame_index,
             "frame_name": frame_path.name,
             "frame_path": str(frame_path),
             "frame": frame_bgr,
-            "frame_tensor": self._frame_tensor(frame_bgr, self.device),
             "depth": depth_data,
-            "depth_tensor": None if depth_data is None else depth_data.get("depth"),
             "flows": {
                 "incoming": incoming_flows,
                 "outgoing": outgoing_flows,
@@ -212,4 +211,4 @@ def load_packing_model(input_data):
     """
     Load the tensor model based on the input data.
     """
-    return TensorPackingModel(device=input_data.get("device", "auto"))
+    return RecordPackingModel(device=input_data.get("device", "auto"))

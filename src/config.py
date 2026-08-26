@@ -40,7 +40,11 @@ def step_0_setup(args):
     elif args.machine == "jst":
         print("\n##### Running on JST #####\n")
         args.device = "cuda:0"
-        raise ValueError("JST is not supported yet. Please use ml-pulsar or macbook-pro.")
+        args.dataset_path = root / 'data' / 'bdd100k'
+        args.output_dir = root / 'output' / 'bdd100k' / args.exp
+        os.makedirs(root / 'output', exist_ok=True)
+        os.makedirs(root / 'output' / 'bdd100k', exist_ok=True)
+        os.makedirs(args.output_dir, exist_ok=True)
     else:
         raise ValueError(f"Unsupported machine: {args.machine}")
 
@@ -59,11 +63,11 @@ def step_0_setup(args):
         if os.path.exists(frames_path):
             print(f"\n##### Number of frames in the dataset path: {len(os.listdir(frames_path))} #####\n")
         else:
-            raise ValueError(f"Frames path does not exist: {frames_path}")
+            os.makedirs(frames_path, exist_ok=True)
         if os.path.exists(depth_maps_path):
             print(f"\n##### Number of depth maps in the dataset path: {len(os.listdir(depth_maps_path))} #####\n")
         else:
-            raise ValueError(f"Depth maps path does not exist: {depth_maps_path}")
+            os.makedirs(depth_maps_path, exist_ok=True)
     else:
         raise ValueError(f"Dataset path does not exist: {args.dataset_path}")
 
@@ -108,6 +112,8 @@ def get_step_01_input(args):
         "depth_path": all_depth_paths,
         "flow_path": all_flow_paths,
         "video_ids": all_video_ids,
+        # bdd100k dataset
+        "bdd100k_frame_rate": args.bdd100k_frame_rate,
         # yolov8 world
         "od_model_path": root / args.driving_mini_od_model,
         "classes": args.driving_mini_obj_classes,
@@ -150,6 +156,7 @@ def get_step_02_input(args):
         "step01_output_dir": args.output_dir / "step01_output",
         "top_k": args.tracker_top_k,
         "window_size": args.tracker_window_size,
+        "bdd100k_frame_rate": args.bdd100k_frame_rate,
     }
     
     return input_data

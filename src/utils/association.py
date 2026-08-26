@@ -28,7 +28,7 @@ class FrameDetection:
 
     detection_id: str
     bbox_xyxy: tuple[float, float, float, float]
-    mask: np.ndarray | None = None
+    mask_array: np.ndarray | None = None
     class_name: str | None = None
     confidence: float | None = None
 

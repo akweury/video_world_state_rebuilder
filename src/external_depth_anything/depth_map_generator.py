@@ -23,8 +23,11 @@ def clear_depth_model_cache():
 
 def _get_cached_depth_model(model_name, device, use_fp16=False):
     if DepthAnything3 is None:
+        setup_script = PROJECT_ROOT / "src" / "external_depth_anything" / "setup_depth_anything_v3.py"
+        external_repo = PROJECT_ROOT / "external" / "Depth-Anything-3"
         raise RuntimeError(
-            "Depth Anything 3 is unavailable; install the external package before generating depth maps"
+            "Depth Anything 3 is unavailable. Install the external repository at "
+            f"{external_repo} or run {setup_script} from the project venv before generating depth maps"
         ) from _DEPTH_ANYTHING_IMPORT_ERROR
     key = (str(model_name), str(device), bool(use_fp16))
     if key in _DEPTH_MODEL_CACHE:
@@ -57,11 +60,10 @@ DEPTH_ANYTHING_SRC = PROJECT_ROOT / "external" / "Depth-Anything-3" / "src"
 if str(DEPTH_ANYTHING_SRC) not in sys.path:
     sys.path.insert(0, str(DEPTH_ANYTHING_SRC))
 
-import config
 
 # Import Depth Anything 3
 try:
-    from depth_anything_3.api import DepthAnything3
+    from depth_anything_3.api import DepthAnything3  # type: ignore[import-not-found]
 except ImportError as e:
     DepthAnything3 = None
     _DEPTH_ANYTHING_IMPORT_ERROR = e
@@ -317,14 +319,6 @@ def main():
     )
     
     args = parser.parse_args()
-    
-    # Set default paths using config
-    if args.input_dir is None:
-        coco_path = config.get_coco_path(remote=False)
-        args.input_dir = coco_path / "selected" / "val2017"
-    
-    if args.output_dir is None:
-        args.output_dir = config.storage / "coco" / "depth_maps"
     
     # Check if input directory exists
     if not Path(args.input_dir).exists():
