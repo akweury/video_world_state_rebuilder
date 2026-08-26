@@ -119,6 +119,19 @@ def get_step_01_input(args):
         # sam2
         "mask_model_path": root / args.sam2_model,
         "sam_prompt_candidates": args.sam_prompt_candidates,
+        # semantic segmentation
+        "semseg_enabled": getattr(args, "semseg_enabled", False),
+        "semseg_model_path": getattr(
+            args,
+            "semseg_model_path",
+            "nvidia/segformer-b5-finetuned-ade-640-640",
+        ),
+        "semseg_target_labels": getattr(
+            args,
+            "semseg_target_labels",
+            ["sky", "road", "sidewalk", "terrain", "building", "vegetation", "wall", "fence"],
+        ),
+        "mask_label_top_k": getattr(args, "mask_label_top_k", 3),
         # Depth Anything v3
         "depth_model": args.depth_model,
         "depth_process_resolution": args.depth_process_resolution,

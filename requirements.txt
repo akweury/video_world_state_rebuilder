@@ -5,6 +5,8 @@ Pillow
 torch
 torchvision
 ultralytics
+transformers
+timm
 
 # Feature extraction and analysis dependencies
 scikit-learn
