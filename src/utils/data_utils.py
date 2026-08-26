@@ -5,6 +5,17 @@ import numpy as np
 from pathlib import Path
 import cv2
 
+def _to_numpy(value):
+    if value is None:
+        return None
+    if isinstance(value, np.ndarray):
+        return value
+    if hasattr(value, "detach"):
+        return value.detach().cpu().numpy()
+    return np.asarray(value)
+
+
+
 def _normalize_rotation_value(value):
     if value is None:
         return None

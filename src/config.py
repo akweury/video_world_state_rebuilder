@@ -148,6 +148,8 @@ def get_step_02_input(args):
         "output_dir": output_dir,
         "device": args.device,
         "step01_output_dir": args.output_dir / "step01_output",
+        "top_k": args.tracker_top_k,
+        "window_size": args.tracker_window_size,
     }
     
     return input_data

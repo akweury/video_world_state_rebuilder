@@ -543,7 +543,7 @@ def _frames_to_masks(video_id, frame_paths, output_dir, mask_model, label_top_k:
         results.append({"frame": frame_path.name, "masks": frame_results})
     data_utils.save_json(results, mask_file)
 
-def _frames_to_dicts(video_id, frame_dir, depth_dir, flow_dir, obj_dir, mask_dir, output_dir, tensor_model):
+def _frames_to_records(video_id, frame_dir, depth_dir, flow_dir, obj_dir, mask_dir, output_dir, tensor_model):
     print(f"- frames to dicts for video: {video_id}")
     """
     Convert the processed frames, depth maps, flow maps, object detections, 
@@ -614,7 +614,7 @@ def main(input_data):
         _frames_to_masks(vid, frame_paths, mask_dir, mask_model, mask_label_top_k)
         _frames_to_depths(f_path, d_path, depth_model)
         _frames_to_flows(f_path, flow_path, flow_model)
-        _frames_to_dicts(vid, f_path, d_path, flow_path, obj_dir, mask_dir, record_dir, packing_model)
+        _frames_to_records(vid, f_path, d_path, flow_path, obj_dir, mask_dir, record_dir, packing_model)
 
 
      
