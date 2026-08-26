@@ -96,6 +96,10 @@ def load_json(file_path):
         data = json.load(f)
     return data
 
+def save_json(data, file_path):
+    with open(file_path, 'w') as f:
+        json.dump(data, f, indent=2)
+
 
 def load_npz_dict(npz_path):
     npz_path = Path(npz_path)

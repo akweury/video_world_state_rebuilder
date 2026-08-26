@@ -4,6 +4,7 @@ from tqdm import tqdm
 from pathlib import Path
 import cv2
 import numpy as np
+import json
 
 from src.pipeline.step01_od import DetectionTier, ObjectCandidate, load_od_model
 from src.pipeline.step01_mask import load_mask_model
@@ -18,9 +19,11 @@ def _video_to_frames(video_path, output_dir):
     Args:
         video_path (str): Path to the input video file.
         output_dir (str): Directory where the extracted frames will be saved.
+    Returns:
+        All frames path in the output directory.
     """
     if os.path.exists(output_dir):
-        return
+        return []
 
     # Create the output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -41,6 +44,10 @@ def _video_to_frames(video_path, output_dir):
         frame_count += 1
 
     cap.release()
+    return sorted(
+        str(path) for path in Path(output_dir).iterdir()
+        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
+    )
 
 def _frames_to_flows(frame_dir, output_dir, flow_model):
     print(f"- frames to flows for video: {Path(frame_dir).name}")
@@ -244,7 +251,7 @@ def _frames_to_objects(video_id, frame_dir, output_dir, od_model, batch_size=8):
         import json
         json.dump(detections_by_frame, handle, indent=2)
 
-def _frames_to_masks(video_id,frame_dir, output_dir, mask_model):
+def _frames_to_masks(video_id, frame_paths, output_dir, mask_model):
     """
     use the mask model to detect masks in each frame and save the results as json file.
     
@@ -258,24 +265,9 @@ def _frames_to_masks(video_id,frame_dir, output_dir, mask_model):
     if os.path.exists(mask_file):
         return
     mask_model.warmup()
-
-    object_file = Path(output_dir).parent / "objects" / f"{video_id}_objects.json"
-    if not object_file.exists():
-        return
-
-    import json
-
-    with object_file.open("r", encoding="utf-8") as handle:
-        object_frames = json.load(handle)
-
-    detections_by_frame = {entry["frame"]: entry.get("objects", []) for entry in object_frames}
-    frame_paths = sorted(
-        path for path in Path(frame_dir).iterdir()
-        if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
-    )
-    if not frame_paths:
-        return
-
+    objects_json = data_utils.load_json(Path(output_dir).parent / "objects" / f"{video_id}_objects.json")
+    detections_by_frame = {entry["frame"]: entry.get("objects", []) for entry in objects_json}
+    
     class Frame:
         def __init__(self, frame_name, image_bgr, frame_index):
             self.video_id = video_id
@@ -324,10 +316,7 @@ def _frames_to_masks(video_id,frame_dir, output_dir, mask_model):
             )
 
         results.append({"frame": frame_path.name, "masks": frame_results})
-
-    os.makedirs(Path(mask_file).parent, exist_ok=True)
-    with open(mask_file, "w", encoding="utf-8") as handle:
-        json.dump(results, handle, indent=2)
+    data_utils.save_json(results, mask_file)
 
 def _frames_to_dicts(video_id, frame_dir, depth_dir, flow_dir, obj_dir, mask_dir, output_dir, tensor_model):
     print(f"- frames to dicts for video: {video_id}")
@@ -394,9 +383,9 @@ def main(input_data):
     print(f"- Total Processed Videos: {len(all_video_paths)}")
     for vid, v_path, f_path, d_path, flow_path in tqdm(zip(all_video_ids, all_video_paths, all_frame_paths, all_depth_paths, all_flow_paths),
                                             desc="frames to objects/masks/depths/flows", total=len(all_video_ids)):
-        _video_to_frames(v_path, f_path)
+        frame_paths = _video_to_frames(v_path, f_path)
         _frames_to_objects(vid, f_path, obj_dir, od_model)
-        _frames_to_masks(vid, f_path, mask_dir, mask_model)
+        _frames_to_masks(vid, frame_paths, mask_dir, mask_model)
         _frames_to_depths(f_path, d_path, depth_model)
         _frames_to_flows(f_path, flow_path, flow_model)
         _frames_to_dicts(vid, f_path, d_path, flow_path, obj_dir, mask_dir, record_dir, packing_model)

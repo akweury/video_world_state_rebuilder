@@ -80,6 +80,7 @@ class Sam2MaskEvidenceBackend:
             self.warmup()
         height, width = frame.image_bgr.shape[:2]
         outputs: list[MaskCandidateOutput] = []
+        seen_masks: set[bytes] = set()
         proposal_results = self._model.predict(
             source=frame.image_bgr,
             device=self.device,
@@ -109,6 +110,10 @@ class Sam2MaskEvidenceBackend:
                     ).astype(bool)
                 if not np.any(binary):
                     continue
+                mask_key = binary.tobytes()
+                if mask_key in seen_masks:
+                    continue
+                seen_masks.add(mask_key)
                 outputs.append(
                     MaskCandidateOutput(
                         prompt_detection_id=f"{result_prefix}:{index}",
@@ -118,48 +123,33 @@ class Sam2MaskEvidenceBackend:
                 )
             return True
 
-        has_proposals = append_results("proposal", proposal_results)
+        append_results("proposal", proposal_results)
 
-        if not has_proposals:
-            prompts = tuple(
-                detection
-                for detection in detections
-                if self.prompt_candidates or detection.tier == DetectionTier.PRIMARY
-            )
-            if prompts:
-                boxes = [
-                    [
-                        prompt.bbox_xyxy[0],
-                        prompt.bbox_xyxy[1],
-                        prompt.bbox_xyxy[2],
-                        prompt.bbox_xyxy[3],
-                    ]
-                    for prompt in prompts
+        prompts = tuple(
+            detection
+            for detection in detections
+            if self.prompt_candidates or detection.tier == DetectionTier.PRIMARY
+        )
+        if prompts:
+            boxes = [
+                [
+                    prompt.bbox_xyxy[0],
+                    prompt.bbox_xyxy[1],
+                    prompt.bbox_xyxy[2],
+                    prompt.bbox_xyxy[3],
                 ]
-                prompt_results = self._model.predict(
-                    source=frame.image_bgr,
-                    bboxes=boxes,
-                    device=self.device,
-                    retina_masks=True,
-                    conf=0.0,
-                    verbose=False,
-                    stream=False,
-                )
-                append_results("prompt", prompt_results)
-
-        if outputs:
-            coverage = np.zeros((height, width), dtype=bool)
-            for output in outputs:
-                coverage |= output.mask
-            uncovered = ~coverage
-            if np.any(uncovered):
-                outputs.append(
-                    MaskCandidateOutput(
-                        prompt_detection_id="proposal:coverage",
-                        mask=uncovered,
-                        confidence=1.0,
-                    )
-                )
+                for prompt in prompts
+            ]
+            prompt_results = self._model.predict(
+                source=frame.image_bgr,
+                bboxes=boxes,
+                device=self.device,
+                retina_masks=True,
+                conf=0.0,
+                verbose=False,
+                stream=False,
+            )
+            append_results("prompt", prompt_results)
 
         if not outputs:
             outputs.append(
