@@ -193,8 +193,6 @@ class BeamSearchTracker:
         """
         Choose the best child track hypothesis based on the given IOU scores.
         """
-
-
         track.children = []
         chosen_child: TrackHypothesis | None = None
 
