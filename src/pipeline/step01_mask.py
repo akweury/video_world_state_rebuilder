@@ -151,7 +151,9 @@ class Sam2MaskEvidenceBackend:
                 verbose=False,
                 stream=False,
             )
-            append_results("prompt", prompt_results)
+            # Prompt masks are computed as proposals, but the public output remains
+            # the full-frame mask set from the automatic pass above.
+            _ = prompt_results
 
         if not outputs:
             outputs.append(

@@ -13,6 +13,19 @@ from src.pipeline.step01_flow import load_flow_model
 from src.pipeline.step01_tensor import load_packing_model
 from src.utils import data_utils
 
+class Frame:
+    def __init__(self,video_id, frame_name, image_bgr, frame_index):
+        self.video_id = video_id
+        self.frame_index = frame_index
+        self.timestamp_s = 0.0
+        self.source_frame_index = frame_index
+        self.source_timestamp_s = 0.0
+        self.image_bgr = image_bgr
+        self.frame_name = frame_name
+
+    @property
+    def image_rgb(self):
+        return cv2.cvtColor(self.image_bgr, cv2.COLOR_BGR2RGB)
 
 def _mask_color(index: int) -> tuple[int, int, int]:
     palette = [
@@ -568,19 +581,7 @@ def _frames_to_masks(video_id,frame_rate, frame_paths, output_dir, mask_model, l
     objects_json = data_utils.load_json(Path(output_dir).parent / "objects" / f"{video_id}_fps_{frame_rate}_objects.json")
     detections_by_frame = {entry["frame"]: entry.get("objects", []) for entry in objects_json}
     
-    class Frame:
-        def __init__(self, frame_name, image_bgr, frame_index):
-            self.video_id = video_id
-            self.frame_index = frame_index
-            self.timestamp_s = 0.0
-            self.source_frame_index = frame_index
-            self.source_timestamp_s = 0.0
-            self.image_bgr = image_bgr
-            self.frame_name = frame_name
 
-        @property
-        def image_rgb(self):
-            return cv2.cvtColor(self.image_bgr, cv2.COLOR_BGR2RGB)
 
     def restore_candidate(raw_candidate):
         return ObjectCandidate(
@@ -601,7 +602,7 @@ def _frames_to_masks(video_id,frame_rate, frame_paths, output_dir, mask_model, l
         if image_bgr is None:
             continue
 
-        frame = Frame(frame_path.name, image_bgr, frame_index)
+        frame = Frame(video_id, frame_path.name, image_bgr, frame_index)
         detections = [restore_candidate(candidate) for candidate in detections_by_frame.get(frame_path.name, [])]
         outputs = mask_model.predict_frame(frame, detections)
 

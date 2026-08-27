@@ -133,6 +133,11 @@ class RecordPackingModel:
 
         depth_path = Path(depth_dir) / f"{frame_path.stem}.npz"
         depth_data = self._npz_to_tensors(data_utils.load_npz_dict(depth_path))
+        if depth_data is None:
+            depth_path = Path(depth_dir) / f"{frame_path.stem}_depth.npz"
+            depth_data = self._npz_to_tensors(data_utils.load_npz_dict(depth_path))
+        if depth_data is None:
+            raise ValueError(f"Depth data is missing for frame: {frame_path}")
 
         objects = objects_by_frame[frame_path.name]
         mask_entries = masks_by_frame[frame_path.name]
