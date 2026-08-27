@@ -120,7 +120,7 @@ def select_corresponding_full_frame_mask_from_bbox(object_detection, frame_masks
     return best_mask
 
 
-def rank_corresponding_full_frame_mask(last_mask, frame_detections, top_k: int):
+def spawn_mask_one_to_k(last_mask, frame_detections, top_k: int):
     """
     calculate the iou between the last mask and each of the next masks, 
     and return them sorted by their iou scores in descending order.
@@ -130,7 +130,7 @@ def rank_corresponding_full_frame_mask(last_mask, frame_detections, top_k: int):
         return []
     iou_scores = []
     for index, detection in enumerate(frame_detections):
-        iou = _mask_iou(last_mask, detection['mask']['mask'])
+        iou = _mask_iou(last_mask, detection['mask'])
         if iou <= 0.0:
             continue
         iou_scores.append((iou, index, detection))
@@ -156,3 +156,29 @@ def merge_detections(frame_objs, frame_masks):
         mask = select_corresponding_full_frame_mask_from_bbox(obj, frame_masks)
         merged.append({'obj': obj,'mask': mask})
     return merged
+
+
+def make_observation(frame_index, obj, mask, depth_score: float = 0.0, flow_score: float = 0.0,):
+    return TrackObservation(
+        frame_index=frame_index,
+        mask=mask, 
+        class_name=obj["class_name"],
+        confidence=obj["confidence"],
+        depth_score=depth_score,
+        flow_score=flow_score
+    )
+
+
+def search_top_k_masks(active_tracks, frame_detections, frame_depth, frame_flow, top_k: int):
+    """
+    return the assignments for the current frame based on the ranked masks.
+    The assignments dictionary maps track IDs to a list of top candidate masks for that track.
+    """
+    assignments = {}
+    assigned_detections = set()
+    for track in active_tracks:
+        new_assignment = spawn_mask_one_to_k(track.last_masks, frame_detections, top_k)
+        if new_assignment and len(new_assignment) > 0:
+            assignments[track.track_id] = new_assignment
+            assigned_detections.update(index for _, index, _ in new_assignment)
+    return assignments, assigned_detections

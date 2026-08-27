@@ -83,8 +83,6 @@ we initialize a new track for it.
 
 
 class BeamSearchTracker:
-    
-    
     def __init__(self,
                  top_k=5,
                  window_size=5,
@@ -100,65 +98,7 @@ class BeamSearchTracker:
         self._last_input_frame_index: int | None = None
         self._last_effective_frame_index: int | None = None
 
-    def _resolve_frame_index(self, frame_index: int) -> int:
-        if self._last_input_frame_index is not None and frame_index <= self._last_input_frame_index:
-            self._frame_index_offset = (self._last_effective_frame_index or -1) + 1
-        effective_frame_index = self._frame_index_offset + frame_index
-        self._last_input_frame_index = frame_index
-        self._last_effective_frame_index = effective_frame_index
-        return effective_frame_index
 
-    # def _frame_masks(self, mask_entry) -> Sequence:
-    #     detections = getattr(mask_entry, "detections", mask_entry)
-    #     return tuple(detections)
-
-    def _make_observation(
-        self,
-        frame_index, obj, mask,
-        depth_score: float = 0.0,
-        flow_score: float = 0.0,
-    ) -> TrackObservation:
-        return TrackObservation(
-            frame_index=frame_index,
-            mask=mask, class_name=obj["class_name"],
-            confidence=obj["confidence"],
-            depth_score=depth_score,
-            flow_score=flow_score
-        )
-    def _score_frame_masks(self, frame_detections, frame_depth, frame_flow):
-        """
-        return the assignments for the current frame based on the ranked masks.
-        The assignments dictionary maps track IDs to a list of top candidate masks for that track.
-        """
-        assignments = {}
-        assigned_detections = set()
-        for track in self.active_tracks:
-            new_assignment = rank_corresponding_full_frame_mask(track.last_mask, frame_detections, self.top_k)
-            if new_assignment and len(new_assignment) > 0:
-                assignments[track.track_id] = new_assignment
-                assigned_detections.update(index for _, index, _ in new_assignment)
-        return assignments, assigned_detections
-
-
-
-    def _build_assignments(
-        self,
-        scored_pairs: list[tuple[float, int, int, float, float, float]],
-    ) -> tuple[set[int], set[int], dict[int, int]]:
-        assigned_tracks: set[int] = set()
-        assigned_detections: set[int] = set()
-        assignments: dict[int, int] = {}
-
-        for score, track_index, detection_index, _, _, _ in scored_pairs:
-            if score <= 0.0:
-                continue
-            if track_index in assigned_tracks or detection_index in assigned_detections:
-                continue
-            assigned_tracks.add(track_index)
-            assigned_detections.add(detection_index)
-            assignments[track_index] = detection_index
-
-        return assigned_tracks, assigned_detections, assignments
 
     def _advance_track(self, track, frame_index, frame_detections, assignments):
         # If the track is not assigned to any detection in the current frame, mark it as missed.
@@ -170,25 +110,25 @@ class BeamSearchTracker:
             return track
 
         iou_scores = assignments[track.track_id]
-        advanced_track = self._choose_best_child(iou_scores, track, frame_index, frame_detections)
+        advanced_track = self._spawn_k_children(track, frame_index, frame_detections, iou_scores)
+        # advanced_track = self._choose_best_child(iou_scores, track, frame_index, frame_detections)
         return advanced_track
+    
+    def _spawn_k_children(self, track, frame_index, frame_detections, iou_scores):
+        """
+        Spawn K child tracks for the given track based on the provided IOU scores.
+        """
+        track.children = []
+        for candidate_index, candidate_score in iou_scores:
+            candidate_mask = frame_detections[candidate_index]["mask"]
+            child = track.branch(track.track_id)
+            child.add_observation(
+                make_observation(frame_index,frame_detections[candidate_index],candidate_mask),
+                candidate_score,
+            )
+        return track
 
-    def _top_candidate_mask_indices(
-        self,
-        track: TrackHypothesis,
-        object_detection,
-        frame_masks,
-    ) -> list[tuple[int, float]]:
-        ranked_candidates: list[tuple[int, float]] = []
-        for candidate_index, candidate in enumerate(frame_masks):
-            candidate_mask = candidate.get("mask")
-            mask_score = _mask_iou(track.last_mask, candidate_mask)
-            confidence_score = max(0.0, min(1.0, float(candidate.get("confidence", 0.0) or 0.0)))
-            score = 0.80 * mask_score + 0.20 * confidence_score if track.last_mask is not None else confidence_score
-            ranked_candidates.append((candidate_index, float(score)))
-        ranked_candidates.sort(key=lambda item: (-item[1], item[0]))
-        return ranked_candidates[: max(1, int(self.top_k))]
-
+    
     def _choose_best_child(self, iou_scores, track, frame_index, frame_detections):
         """
         Choose the best child track hypothesis based on the given IOU scores.
@@ -209,7 +149,7 @@ class BeamSearchTracker:
             candidate_mask = frame_detections[candidate_index]["mask"]
             child = track.branch(track.track_id)
             child.add_observation(
-                self._make_observation(
+                make_observation(
                     frame_index,
                     frame_detections[candidate_index],
                     candidate_mask,
@@ -233,17 +173,30 @@ class BeamSearchTracker:
         return next_active_tracks
 
 
-    def _track_frame(self, frame_index: int, frame_objs, frame_masks, frame_depth, frame_flow) -> None:
-        
-        frame_detections = merge_detections(frame_objs, frame_masks)
+    def _track_frame(self, frame_index: int, frame_detections, frame_depth, frame_flow) -> None:
+
+        # each frame contains a list of detections, we need a for loop to iterate through each detection and assign it to the corresponding track.
+        # we should guarantee each detection is assigned to at least one track, 
+        # and each track is assigned to at most top_k detections
+        # each track then will be pruned to keep at most top_k branches until the current frame
+
+
         # Score the current frame's detections against active tracks
-        assignments, assigned_detections = self._score_frame_masks(frame_detections, frame_depth, frame_flow)
+        assignments, assigned_detections = search_top_k_masks(self.active_tracks, frame_detections, frame_depth, 
+                                                              frame_flow, self.top_k)
 
         # Advance active tracks and choose their full-frame mask candidates
         next_active_tracks = self._advance_active_tracks(frame_index, frame_detections, assignments)
 
         # Spawn new tracks for any unassigned detections
-        next_active_tracks.extend(self._spawn_unassigned_tracks(frame_index, frame_objs, frame_masks, assigned_detections))
+        next_active_tracks.extend(self._spawn_unassigned_tracks(frame_index, frame_detections, assigned_detections))
+
+        # 4. prune / keep only the best branches for each track
+        for track in next_active_tracks:
+            if len(track.children) > self.top_k:
+                track.children.sort(key=lambda child: -child.cumulative_score)
+                track.children = track.children[:self.top_k]
+
 
         # Update the list of active tracks for the next frame
         self.active_tracks = next_active_tracks
@@ -289,7 +242,7 @@ class BeamSearchTracker:
         )
 
     def _spawn_track(self, frame_index: int, detection, mask) -> TrackHypothesis:
-        observation = self._make_observation(frame_index, detection, mask)
+        observation = make_observation(frame_index, detection, mask)
         track = TrackHypothesis(
             track_id=f"track:{self._next_track_index:06d}",
             first_frame_index=frame_index,
@@ -342,8 +295,9 @@ class BeamSearchTracker:
             frame_index = range_frame_indices[local_index]
             frame_depth = range_frame_depths[local_index]
             frame_flow = range_frame_flows[local_index]
-            self._track_frame(frame_index, frame_objs, frame_masks, frame_depth, frame_flow)
-        return tuple(self.completed_tracks)
+            frame_detections = merge_detections(frame_objs, frame_masks)
+            # each track will be spawned upto top_k branches
+            self._track_frame(frame_index, frame_detections, frame_depth, frame_flow)
 
 
 

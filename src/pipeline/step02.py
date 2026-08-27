@@ -404,6 +404,9 @@ def _track_video(tracker_model, video_data, output_dir, window_size=5, visual_fp
         # Track objects across frames using the tracker model
         for start in tqdm(range(0, len(frames), window_size)):
             end = min(start + window_size, len(frames))
+            # given window size of frames, 
+            # but only the objects in the next frame will be tracked, other frames are used to provide context for the tracker model to track the objects in the next frame., 
+            # for each track, at most top_k candidates will be kept for the next frame, and the rest will be discarded.
             tracker_model.track(indices[start:end],objs[start:end], masks[start:end], depths[start:end], flows[start:end])
 
         serialized_tracks = tracker_model.finalize_tracks()
