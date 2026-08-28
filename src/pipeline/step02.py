@@ -43,88 +43,88 @@ def load_step01_output(step01_output_dir):
     return step01_output_data
 
 
-def _frame_record_to_detections(frame_record, frame_index):
-    objects = frame_record["objects"]
-    masks = frame_record["masks"]
-    detections = []
+# def _frame_record_to_detections(frame_record, frame_index):
+#     objects = frame_record["objects"]
+#     masks = frame_record["masks"]
+#     detections = []
 
-    def load_mask(mask_path):
-        mask_path = Path(mask_path)
-        if mask_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}:
-            mask_image = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-            if mask_image is None:
-                return None
-            return mask_image > 0
-        if mask_path.suffix.lower() in {".npy", ".npz"}:
-            loaded = np.load(mask_path, allow_pickle=False)
-            if isinstance(loaded, np.lib.npyio.NpzFile):
-                if not loaded.files:
-                    return None
-                first_key = loaded.files[0]
-                return np.asarray(loaded[first_key])
-            return np.asarray(loaded)
-        return None
+#     def load_mask(mask_path):
+#         mask_path = Path(mask_path)
+#         if mask_path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}:
+#             mask_image = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+#             if mask_image is None:
+#                 return None
+#             return mask_image > 0
+#         if mask_path.suffix.lower() in {".npy", ".npz"}:
+#             loaded = np.load(mask_path, allow_pickle=False)
+#             if isinstance(loaded, np.lib.npyio.NpzFile):
+#                 if not loaded.files:
+#                     return None
+#                 first_key = loaded.files[0]
+#                 return np.asarray(loaded[first_key])
+#             return np.asarray(loaded)
+#         return None
 
-    for detection_index, obj in enumerate(objects):
-        bbox_xyxy = obj["bbox_xyxy"]
-        class_name = obj["class_name"]
-        if bbox_xyxy is None or class_name is None:
-            continue
-        mask_path = masks[detection_index]["mask_path"]
-        mask = load_mask(mask_path)
-        if mask is None:
-            continue
-        detections.append(
-            FrameDetection(
-                detection_id=f"frame:{frame_index:06d}:det:{detection_index:04d}",
-                bbox_xyxy=tuple(float(value) for value in bbox_xyxy),
-                mask_array=mask,
-                class_name=str(class_name),
-                confidence=float(obj["confidence"]),
-            )
-        )
-    return FrameDetections(frame_index=frame_index, detections=tuple(detections))
+#     for detection_index, obj in enumerate(objects):
+#         bbox_xyxy = obj["bbox_xyxy"]
+#         class_name = obj["class_name"]
+#         if bbox_xyxy is None or class_name is None:
+#             continue
+#         mask_path = masks[detection_index]["mask_path"]
+#         mask = load_mask(mask_path)
+#         if mask is None:
+#             continue
+#         detections.append(
+#             FrameDetection(
+#                 detection_id=f"frame:{frame_index:06d}:det:{detection_index:04d}",
+#                 bbox_xyxy=tuple(float(value) for value in bbox_xyxy),
+#                 mask_array=mask,
+#                 class_name=str(class_name),
+#                 confidence=float(obj["confidence"]),
+#             )
+#         )
+#     return FrameDetections(frame_index=frame_index, detections=tuple(detections))
 
-def _serialize_tracks(tracks, frame_name_by_index, track_path):
-    serialized_tracks = []
-    for track in tracks:
-        observations = []
-        for observation in track.observations:
-            observations.append(
-                {
-                    "frame_index": observation.frame_index,
-                    "frame_name": frame_name_by_index.get(observation.frame_index),
-                    "detection_id": observation.detection_id,
-                    "mask": _to_numpy(observation.mask).astype(bool) if observation.mask is not None else None,
-                    "class_name": observation.class_name,
-                    "confidence": observation.confidence,
-                    "depth_score": observation.depth_score,
-                    "flow_score": observation.flow_score,
-                    "mask_pixels": observation.mask_pixels,
-                    "beam_candidate_ids": list(getattr(observation, "beam_candidate_ids", ())),
-                    "narrowed_candidate_masks": [
-                        _to_numpy(mask).astype(bool) if mask is not None else None
-                        for mask in getattr(observation, "narrowed_candidate_masks", ())
-                    ],
-                }
-            )
+# def _serialize_tracks(tracks, frame_name_by_index, track_path):
+#     serialized_tracks = []
+#     for track in tracks:
+#         observations = []
+#         for observation in track.observations:
+#             observations.append(
+#                 {
+#                     "frame_index": observation.frame_index,
+#                     "frame_name": frame_name_by_index.get(observation.frame_index),
+#                     "detection_id": observation.detection_id,
+#                     "mask": _to_numpy(observation.mask).astype(bool) if observation.mask is not None else None,
+#                     "class_name": observation.class_name,
+#                     "confidence": observation.confidence,
+#                     "depth_score": observation.depth_score,
+#                     "flow_score": observation.flow_score,
+#                     "mask_pixels": observation.mask_pixels,
+#                     "beam_candidate_ids": list(getattr(observation, "beam_candidate_ids", ())),
+#                     "narrowed_candidate_masks": [
+#                         _to_numpy(mask).astype(bool) if mask is not None else None
+#                         for mask in getattr(observation, "narrowed_candidate_masks", ())
+#                     ],
+#                 }
+#             )
 
-        serialized_tracks.append(
-            {
-                "track_id": track.track_id,
-                "first_frame_index": track.first_frame_index,
-                "last_frame_index": track.last_frame_index,
-                "cumulative_score": float(getattr(track, "cumulative_score", 0.0)),
-                "first_frame_name": frame_name_by_index.get(track.first_frame_index),
-                "last_frame_name": frame_name_by_index.get(track.last_frame_index),
-                "observations": observations,
-            }
-        )
-    with track_path.open("wb") as handle:
-        pickle.dump(serialized_tracks, handle)
+#         serialized_tracks.append(
+#             {
+#                 "track_id": track.track_id,
+#                 "first_frame_index": track.first_frame_index,
+#                 "last_frame_index": track.last_frame_index,
+#                 "cumulative_score": float(getattr(track, "cumulative_score", 0.0)),
+#                 "first_frame_name": frame_name_by_index.get(track.first_frame_index),
+#                 "last_frame_name": frame_name_by_index.get(track.last_frame_index),
+#                 "observations": observations,
+#             }
+#         )
+#     with track_path.open("wb") as handle:
+#         pickle.dump(serialized_tracks, handle)
 
 
-    return serialized_tracks
+#     return serialized_tracks
 
 
 def _save_tracks(video_id, tracks, output_dir):
@@ -396,27 +396,8 @@ def _track_video(tracker_model, video_data, output_dir, window_size=5, visual_fp
             serialized_tracks = pickle.load(handle)
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
-        objs = [frame["objects"] for frame in frames]
-        masks = [frame["masks"] for frame in frames]
-        indices = [frame["frame_index"] for frame in frames]
-        depths = [frame["depth"]["depth"] for frame in frames]
-        flows = [frame["flows"] for frame in frames]
-        # Track objects across frames using the tracker model
-        for start in tqdm(range(0, len(frames), window_size)):
-            end = min(start + window_size, len(frames))
-            # given window size of frames, 
-            # but only the objects in the next frame will be tracked, other frames are used to provide context for the tracker model to track the objects in the next frame., 
-            # for each track, at most top_k candidates will be kept for the next frame, and the rest will be discarded.
-            tracker_model.track(indices[start:end],objs[start:end], masks[start:end], depths[start:end], flows[start:end])
-
-        serialized_tracks = tracker_model.finalize_tracks()
-
-        # frame_name_by_index = {
-        #     frame_record["frame_index"]: frame_record.get("frame_name", frame_record.get("frame_id", f"frame_{frame_record['frame_index']:05d}"))
-        #     for frame_record in frames
-        # }
-
-        serialized_tracks = _save_tracks(video_id, serialized_tracks, output_dir)
+        serialized_tracks = tracker_model.run(frames)
+        _save_tracks(video_id, serialized_tracks, output_dir)
 
     _visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=visual_fps)
 

@@ -17,43 +17,6 @@ class TrackObservation:
 
 
 
-@dataclass
-class TrackHypothesis:
-    """One branch in the beam-search tree for a single object track."""
-
-    track_id: str
-    first_frame_index: int
-    last_frame_index: int
-    last_mask: np.ndarray | None = None
-    cumulative_score: float = 0.0
-    missed_count: int = 0
-    observations: list[TrackObservation] = field(default_factory=list)
-    children: list[TrackHypothesis] = field(default_factory=list)
-    is_completed: bool = False
-
-    def add_observation(self, observation: TrackObservation, score_delta: float) -> None:
-        self.last_frame_index = observation.frame_index
-        self.last_mask = observation.mask
-        self.observations.append(observation)
-        self.cumulative_score += float(score_delta)
-        self.missed_count = 0
-
-    def mark_missed(self) -> None:
-        self.missed_count += 1
-
-    def branch(self, child_track_id: str, score_delta: float = 0.0) -> TrackHypothesis:
-        child = TrackHypothesis(
-            track_id=child_track_id,
-            first_frame_index=self.first_frame_index,
-            last_frame_index=self.last_frame_index,
-            last_mask=self.last_mask,
-            cumulative_score=self.cumulative_score + float(score_delta),
-            missed_count=self.missed_count,
-            observations=list(self.observations),
-        )
-        self.children.append(child)
-        return child
-
 
 @dataclass(frozen=True)
 class CompletedTrack:

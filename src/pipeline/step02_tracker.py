@@ -5,7 +5,7 @@ from typing import Sequence
 
 import numpy as np
 import torch
-
+from tqdm import tqdm
 
 from src.utils.tracker_utils import *
 
@@ -18,105 +18,47 @@ and uses beam search to find the best tracking candidates, where N is the window
 
 The beam search works by maintaining a set of the top K tracking candidates at each step, where K is the beam width.
 
-Each detection is one of the tracking targets.
-For each tracking target,
-instead of only use a single detection in each frame,
-we can maintain a tree of the top K candidates for each target
-across the next N frames, 
-and use a scoring function to evaluate 
-the quality of each candidate.
-
-Concretely, the following steps are performed:
-1. For each target at frame t,
-we need to locate the corresponding candidate detections M
-in the frame t+1 in the region of R, where R is the region of interest (ROI)
-around the target's predicted position in frame t+1.
-
-2. For each candidate mask in M,
-we compute a score based on the following factors:
-    - The IoU (Intersection over Union) between the candidate mask and the target's predicted mask.
-    - The confidence score of the candidate detection.
-    - The label similarity 
-    - The depth similarity
-    - The flow similarity
-the scoring function can be a weighted sum of these factors, 
-where the weights can be tuned based on the specific application.
-
-3. We select the top K candidates based on the computed scores,
-and add them to the beam for the next frame.
-
-
-Track objects across from current frame t to the next frame t+1 based on
-a series of frames.
-
-1. If any active track does not have a corresponding detection 
-for a eot_num of consecutive frames,
-we mark it as completed and move it to the completed tracks list.
-
-2. If the active tracks are empty,
-we initialize the active tracks with the detections from the first frame.
-Otherwise, we update the active tracks with the new detections 
-from the current frame. 
-
-3. For each active track in frame t, 
-we predict its position in the frame t+1 using the depth and flow information.
-Then, we find the corresponding detections in the next frame
-that are within a certain region of interest (ROI) around the predicted position.
-We select the top K candidates of the detections in frame t+1.
-For each candidate in the frame t+1, 
-we repeat the process for the next N frames, 
-where N is the window size.
-
-4. Based on the search tree of candidates across the next N frames,
-we select the best candidate for each active track based on a scoring function.
-then we update the active tracks for the next frame with the selected candidates.
-
-We also keep the search tree of each active track across the next N frames,
-so the next frame can use it and getting the first N-1 frames results
-and only need to search the N-th frame.
-
-5. for each frame detections of frame t, 
-if it is not assigned to any active track,
-we initialize a new track for it.
 
 """
 
 
-class BeamSearchTracker:
-    def __init__(self,
-                 top_k=5,
-                 window_size=5,
-                 eot_num=3):
-        # Initialize the tracker model here
-        self.top_k = top_k  # Number of top candidates to keep in the beam search
-        self.window_size = window_size
-        self.eot_num = eot_num # end of track number, if a track has no corresponding detection for eot_num consecutive frames, it will be considered as completed.
-        self.active_tracks: list[TrackHypothesis] = []  # List to hold active tracks
-        self.completed_tracks: list[CompletedTrack] = []  # List to hold completed tracks
-        self._next_track_index = 1
-        self._frame_index_offset = 0
-        self._last_input_frame_index: int | None = None
-        self._last_effective_frame_index: int | None = None
+@dataclass
+class TrackHypothesisNode:
+    """One branch in the beam-search tree for a single object track."""
 
+    track_id: str
+    first_frame_index: int
+    last_frame_index: int
+    last_mask: np.ndarray | None = None
+    cumulative_score: float = 0.0
+    missed_count: int = 0
+    observations: list[TrackObservation] = field(default_factory=list)
+    children: list[TrackHypothesisNode] = field(default_factory=list)
+    is_completed: bool = False
+    completed_track: CompletedTrack | None = None
 
+    def add_observation(self, observation: TrackObservation, score_delta: float) -> None:
+        self.last_frame_index = observation.frame_index
+        self.last_mask = observation.mask
+        self.observations.append(observation)
+        self.cumulative_score += float(score_delta)
+        self.missed_count = 0
 
-    def _advance_track(self, track, frame_index, frame_detections, assignments):
+    def _advance_track(self, frame_index, frame_detections, assignments):
         # If the track is not assigned to any detection in the current frame, mark it as missed.
-        if track.track_id not in assignments:
-            track.mark_missed()
-            if track.missed_count >= self.eot_num:
-                self.completed_tracks.append(self._finalize_active_track(track))
-                return None
-            return track
+        if self.track_id not in assignments:
+            self.mark_missed()
+            if self.missed_count >= self.eot_num:
+                self._finalize_active_track()
+        else:    
+            iou_scores = assignments[self.track_id]
+            advanced_track = self._spawn_k_children(self, frame_index, frame_detections, iou_scores)
+            
+            return advanced_track
 
-        iou_scores = assignments[track.track_id]
-        advanced_track = self._spawn_k_children(track, frame_index, frame_detections, iou_scores)
-        # advanced_track = self._choose_best_child(iou_scores, track, frame_index, frame_detections)
-        return advanced_track
-    
-    def _spawn_k_children(self, track, frame_index, frame_detections, iou_scores):
+    def _spawn_k_children(self, frame_index, frame_detections, iou_scores):
         """
-        Spawn K child tracks for the given track based on the provided IOU scores.
+        A track can has at most top_k leaf nodes, each leaf no
         """
         track.children = []
         for candidate_index, candidate_score in iou_scores:
@@ -128,13 +70,121 @@ class BeamSearchTracker:
             )
         return track
 
+
+    def _finalize_active_track(self) -> CompletedTrack:
+        self.is_completed = True
+        self.completed_track = CompletedTrack(
+            track_id=self.track_id,
+            first_frame_index=self.first_frame_index,
+            last_frame_index=self.last_frame_index,
+            cumulative_score=float(self.cumulative_score),
+            observations=tuple(self.observations),
+        )
+
+    def mark_missed(self) -> None:
+        self.missed_count += 1
+
+    def branch(self, child_track_id: str, score_delta: float = 0.0) -> TrackHypothesisNode:
+        child = TrackHypothesisNode(
+            track_id=child_track_id,
+            first_frame_index=self.first_frame_index,
+            last_frame_index=self.last_frame_index,
+            last_mask=self.last_mask,
+            cumulative_score=self.cumulative_score + float(score_delta),
+            missed_count=self.missed_count,
+            observations=list(self.observations),
+        )
+        self.children.append(child)
+        return child
+
+
+
+class TrackDAG:
+    nodes_by_id: dict[str, TrackHypothesisNode]
+    layers: list[list[TrackHypothesisNode]]
+    active_frontier: list[TrackHypothesisNode]
+    completed_tracks: list[CompletedTrack]
+    root_node: TrackHypothesisNode
+    next_node_id: int
+    top_k: int
+    eot_num: int
+
+    def __init__(self, top_k: int = 5, eot_num: int = 3):
+        self.nodes_by_id = {}
+        self.layers = []
+        self.active_frontier = []
+        self.completed_tracks = []
+        self.root_node = None
+        self.top_k = top_k
+        self.eot_num = eot_num
+
+    def add_root(self, root_node: TrackHypothesisNode):
+        self.root_node = root_node
+        self.nodes_by_id[0] = root_node
+        self.active_frontier.append(root_node)
+        self.layers.append([root_node])
+        self.next_node_id = 1
+
+    def add_child(self, parent_node: TrackHypothesisNode, child_node: TrackHypothesisNode):
+        parent_node.children.append(child_node)
+        self.nodes_by_id[self.next_node_id] = child_node
+        self.next_node_id += 1
+        self.active_frontier.append(child_node)
+
+
+
+class BeamSearchTracker:
+    def __init__(self,
+                 top_k=5,
+                 window_size=5,
+                 eot_num=3):
+        
+        # Initialize the tracker model here
+        self.top_k = top_k  # Number of top candidates to keep in the beam search
+        self.window_size = window_size
+        self.eot_num = eot_num # end of track number, if a track has no corresponding detection for eot_num consecutive frames, it will be considered as completed.
+        self.active_tracks: list[TrackHypothesisNode] = []  # List to hold active tracks
+        self.completed_tracks: list[CompletedTrack] = []  # List to hold completed tracks
+        self._next_track_index = 1
+        self._frame_index_offset = 0
+        self._last_input_frame_index: int | None = None
+        self._last_effective_frame_index: int | None = None
+
+    # def _advance_track(self, track, frame_index, frame_detections, assignments):
+    #     # If the track is not assigned to any detection in the current frame, mark it as missed.
+    #     if track.track_id not in assignments:
+    #         track.mark_missed()
+    #         if track.missed_count >= self.eot_num:
+    #             self.completed_tracks.append(self._finalize_active_track(track))
+    #             return None
+    #         return track
+
+    #     iou_scores = assignments[track.track_id]
+    #     advanced_track = self._spawn_k_children(track, frame_index, frame_detections, iou_scores)
+    #     # advanced_track = self._choose_best_child(iou_scores, track, frame_index, frame_detections)
+    #     return advanced_track
+    
+    # def _spawn_k_children(self, track, frame_index, frame_detections, iou_scores):
+    #     """
+    #     Spawn K child tracks for the given track based on the provided IOU scores.
+    #     """
+    #     track.children = []
+    #     for candidate_index, candidate_score in iou_scores:
+    #         candidate_mask = frame_detections[candidate_index]["mask"]
+    #         child = track.branch(track.track_id)
+    #         child.add_observation(
+    #             make_observation(frame_index,frame_detections[candidate_index],candidate_mask),
+    #             candidate_score,
+    #         )
+    #     return track
+
     
     def _choose_best_child(self, iou_scores, track, frame_index, frame_detections):
         """
         Choose the best child track hypothesis based on the given IOU scores.
         """
         track.children = []
-        chosen_child: TrackHypothesis | None = None
+        chosen_child: TrackHypothesisNode | None = None
 
         beam_candidate_ids = tuple(
             frame_detections[candidate_index]["prompt_detection_id"]
@@ -164,7 +214,7 @@ class BeamSearchTracker:
         return chosen_child
 
     def _advance_active_tracks(self, frame_index, frame_detections, assignments):
-        next_active_tracks: list[TrackHypothesis] = []
+        next_active_tracks: list[TrackHypothesisNode] = []
         
         for track in self.active_tracks:
             advanced_track = self._advance_track(track, frame_index, frame_detections, assignments)
@@ -182,8 +232,7 @@ class BeamSearchTracker:
 
 
         # Score the current frame's detections against active tracks
-        assignments, assigned_detections = search_top_k_masks(self.active_tracks, frame_detections, frame_depth, 
-                                                              frame_flow, self.top_k)
+        assignments, assigned_detections = search_top_k_masks(self.active_tracks, frame_detections, frame_depth, frame_flow, self.top_k)
 
         # Advance active tracks and choose their full-frame mask candidates
         next_active_tracks = self._advance_active_tracks(frame_index, frame_detections, assignments)
@@ -202,7 +251,7 @@ class BeamSearchTracker:
         self.active_tracks = next_active_tracks
 
 
-    def _score_detection(self, track: TrackHypothesis, detection, depth_frame=None, flow_frame=None) -> tuple[float, float, float, float]:
+    def _score_detection(self, track: TrackHypothesisNode, detection, depth_frame=None, flow_frame=None) -> tuple[float, float, float, float]:
         mask_score = _mask_iou(track.last_mask, detection["mask"])
         confidence = float(detection["confidence"] or 0.0)
         confidence_score = max(0.0, min(1.0, confidence))
@@ -231,19 +280,19 @@ class BeamSearchTracker:
         )
         return float(score), float(depth_score), float(flow_score), float(mask_score)
 
-    def _finalize_active_track(self, track: TrackHypothesis) -> CompletedTrack:
-        track.is_completed = True
-        return CompletedTrack(
-            track_id=track.track_id,
-            first_frame_index=track.first_frame_index,
-            last_frame_index=track.last_frame_index,
-            cumulative_score=float(track.cumulative_score),
-            observations=tuple(track.observations),
-        )
+    # def _finalize_active_track(self, track: TrackHypothesis) -> CompletedTrack:
+    #     track.is_completed = True
+    #     return CompletedTrack(
+    #         track_id=track.track_id,
+    #         first_frame_index=track.first_frame_index,
+    #         last_frame_index=track.last_frame_index,
+    #         cumulative_score=float(track.cumulative_score),
+    #         observations=tuple(track.observations),
+    #     )
 
-    def _spawn_track(self, frame_index: int, detection, mask) -> TrackHypothesis:
+    def _spawn_track(self, frame_index: int, detection, mask) -> TrackHypothesisNode:
         observation = make_observation(frame_index, detection, mask)
-        track = TrackHypothesis(
+        track = TrackHypothesisNode(
             track_id=f"track:{self._next_track_index:06d}",
             first_frame_index=frame_index,
             last_frame_index=frame_index,
@@ -254,7 +303,7 @@ class BeamSearchTracker:
         self._next_track_index += 1
         return track
 
-    def _spawn_unassigned_tracks(self,frame_index, frame_objs, frame_masks,assigned_indices):
+    def _spawn_unassigned_tracks(self, frame_index, frame_objs, frame_masks,assigned_indices):
         spawned_tracks = []
         for detection_index in range(len(frame_objs)):
             if detection_index in assigned_indices:
@@ -271,7 +320,7 @@ class BeamSearchTracker:
 
     
     def _miss_all_active_tracks(self):
-        still_active: list[TrackHypothesis] = []
+        still_active: list[TrackHypothesisNode] = []
         for track in self.active_tracks:
             track.mark_missed()
             if track.missed_count >= self.eot_num:
@@ -299,7 +348,24 @@ class BeamSearchTracker:
             # each track will be spawned upto top_k branches
             self._track_frame(frame_index, frame_detections, frame_depth, frame_flow)
 
+    def run(self, frames):
+        # objs = [frame["objects"] for frame in frames]
+        # masks = [frame["masks"] for frame in frames]
+        # indices = [frame["frame_index"] for frame in frames]
+        # depths = [frame["depth"]["depth"] for frame in frames]
+        # flows = [frame["flows"] for frame in frames]
+        
+        for start in tqdm(range(0, len(frames), self.window_size)):
+            end = min(start + self.window_size, len(frames))
 
+            # Process the current window of frames
+            assigned_detections = self.advance_tracks(frames[start:end], start)
+            # Create new tracks for unassigned detections in the first frame of the window
+            objs = frames[start]["objects"]
+            self._spawn_new_tracks(objs, assigned_detections, start)
+            
+        serialized_tracks = self.finalize_tracks()
+        return serialized_tracks
 
 def load_tracker_model(top_k=5, window_size=5, eot_num=3):
     return BeamSearchTracker( top_k=top_k,  window_size=window_size, eot_num=eot_num)
