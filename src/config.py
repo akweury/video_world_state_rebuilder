@@ -154,6 +154,7 @@ def get_step_02_input(args):
         "output_dir": output_dir,
         "device": args.device,
         "step01_output_dir": args.output_dir / "step01_output",
+        "mask_iou_th": args.mask_iou_th,
         "top_k": args.tracker_top_k,
         "window_size": args.tracker_window_size,
         "bdd100k_frame_rate": args.bdd100k_frame_rate,

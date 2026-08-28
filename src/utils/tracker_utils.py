@@ -1,106 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-import numpy as np
 import torch
 
 
-@dataclass(frozen=True)
-class TrackObservation:
-    """A single detection attached to one object track."""
-    frame_index: int
-    mask: np.ndarray | None = None
-    class_name: str | None = None
-    confidence: float | None = None
-    depth_score: float | None = None
-    flow_score: float | None = None
-
-
-
-
-@dataclass(frozen=True)
-class CompletedTrack:
-    """Final output for a resolved object track."""
-
-    track_id: str
-    first_frame_index: int
-    last_frame_index: int
-    cumulative_score: float
-    observations: tuple[TrackObservation, ...]
-
-
-def _box_iou(
-    left: tuple[float, float, float, float],
-    right: tuple[float, float, float, float],
-) -> float:
-    x1 = max(left[0], right[0])
-    y1 = max(left[1], right[1])
-    x2 = min(left[2], right[2])
-    y2 = min(left[3], right[3])
-    intersection = max(0.0, x2 - x1) * max(0.0, y2 - y1)
-    left_area = max(0.0, left[2] - left[0]) * max(0.0, left[3] - left[1])
-    right_area = max(0.0, right[2] - right[0]) * max(0.0, right[3] - right[1])
-    union = left_area + right_area - intersection
-    return float(intersection / union) if union > 0 else 0.0
-
-
-def _mask_iou(left: np.ndarray | None, right: np.ndarray | None) -> float:
+def _mask_iou(left, right) -> float:
     if left is None or right is None:
         return 0.0
     if left.shape != right.shape:
         return 0.0
-    union = np.logical_or(left, right).sum()
+    union = torch.logical_or(left, right).sum()
     if union == 0:
         return 0.0
-    return float(np.logical_and(left, right).sum() / union)
-
-
-def select_corresponding_full_frame_mask_from_bbox(object_detection, frame_masks):
-    obj_bbox_xyxy = object_detection['bbox_xyxy']
-    obj_label = object_detection['class_name']
-
-    mask_ious = []
-    mask_labels = []
-    # firstly rank the iou between the object_detection and each mask in frame_masks
-    for mask in frame_masks:
-        mask_ious.append(compute_bbox_mask_iou(obj_bbox_xyxy, mask['mask']))
-        mask_labels.append(mask['label'])
-
-    # firstly select the mask with same label and highest iou
-    best_mask = None
-    best_iou = 0.0
-    for i, (iou, label) in enumerate(zip(mask_ious, mask_labels)):
-        if label == obj_label and iou > best_iou:
-            best_iou = iou
-            best_mask = frame_masks[i]['mask']
-
-    # if no mask with the same label is found, select the mask with the highest iou regardless of label
-    if best_mask is None:
-        for i, iou in enumerate(mask_ious):
-            if iou > best_iou:
-                best_iou = iou
-                best_mask = frame_masks[i]['mask']
-    return best_mask
-
-
-def spawn_mask_one_to_k(last_mask, frame_detections, top_k: int):
-    """
-    calculate the iou between the last mask and each of the next masks, 
-    and return them sorted by their iou scores in descending order.
-    """
-
-    if last_mask is None:
-        return []
-    iou_scores = []
-    for index, detection in enumerate(frame_detections):
-        iou = _mask_iou(last_mask, detection['mask'])
-        if iou <= 0.0:
-            continue
-        iou_scores.append((iou, index, detection))
-
-    iou_scores.sort(key=lambda item: -item[0])
-    return iou_scores[:top_k]
-
+    return float(torch.logical_and(left, right).sum() / union)
 
 def compute_bbox_mask_iou(bbox: tuple[float, float, float, float], mask: torch.Tensor | None) -> float:
     if mask is None:
@@ -113,35 +24,26 @@ def compute_bbox_mask_iou(bbox: tuple[float, float, float, float], mask: torch.T
         return 0.0
     return float(torch.logical_and(bbox_mask, mask).sum().item())
 
-def merge_detections(frame_objs, frame_masks):
-    merged = []
-    for obj in frame_objs:
-        mask = select_corresponding_full_frame_mask_from_bbox(obj, frame_masks)
-        merged.append({'obj': obj,'mask': mask})
-    return merged
+
+def get_node_mask(node, frames):
+    for frame in frames:
+        if frame["frame_id"] == node.frame_id:
+            for mask in frame["masks"]:
+                if mask['prompt_detection_id'] == node.mask_id:
+                    return mask['mask']
+    return None
+
+def find_parent_ids(child_node, frontier_layer, iou_th, frames):
+    parent_node_ids = []
+    parent_ious = []
+    for node_index, node in enumerate(frontier_layer):
+        iou = _mask_iou(get_node_mask(node, frames), get_node_mask(child_node, frames))
+        if iou > iou_th:
+            parent_node_ids.append(node_index)
+            parent_ious.append(iou)
+    return parent_node_ids, parent_ious
 
 
-def make_observation(frame_index, obj, mask, depth_score: float = 0.0, flow_score: float = 0.0,):
-    return TrackObservation(
-        frame_index=frame_index,
-        mask=mask, 
-        class_name=obj["class_name"],
-        confidence=obj["confidence"],
-        depth_score=depth_score,
-        flow_score=flow_score
-    )
 
 
-def search_top_k_masks(active_tracks, frame_detections, frame_depth, frame_flow, top_k: int):
-    """
-    return the assignments for the current frame based on the ranked masks.
-    The assignments dictionary maps track IDs to a list of top candidate masks for that track.
-    """
-    assignments = {}
-    assigned_detections = set()
-    for track in active_tracks:
-        new_assignment = spawn_mask_one_to_k(track.last_masks, frame_detections, top_k)
-        if new_assignment and len(new_assignment) > 0:
-            assignments[track.track_id] = new_assignment
-            assigned_detections.update(index for _, index, _ in new_assignment)
-    return assignments, assigned_detections
+
