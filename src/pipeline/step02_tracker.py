@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Sequence
 
-import numpy as np
-import torch
-from tqdm import tqdm
+import cv2
+
 
 from src.utils.tracker_utils import *
-from src.utils.tracker_utils import _mask_iou
 
 
 """
@@ -106,7 +103,7 @@ class BSL_DAG_Tracker:
             self.add_root(unassigned_node_id)
         self.frontier_layer_index += 1
         
-    def run(self, frames):
+    def run(self, frames, output_dir):
         self.frames = frames
         # build the DAG by advancing through each frame
         for layer_index in range(len(frames)):
@@ -118,6 +115,7 @@ class BSL_DAG_Tracker:
         tracks = []
         for root_node_id in self.root_node_ids:
             best_tracks = get_best_tracks(self.layers, root_node_id, self.top_k) 
+            visual_tracks(self.frames,best_tracks,root_node_id, output_dir=output_dir, visual_fps=1)
             tracks.append(best_tracks)
         print(f"Total Tracks: {len(tracks)}")
         return tracks
@@ -163,6 +161,29 @@ def load_tracker_model(mask_iou_th, top_k=5, window_size=5, eot_num=3):
 
 
     
-def visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=30):
-    raise NotImplementedError("The visual_tracks function is not yet implemented.")
+def visual_tracks(frames, track_candidates,node_id, output_dir, visual_fps=1):
+    img_output_dir = output_dir / "visual_tracks"
+    img_output_dir.mkdir(parents=True, exist_ok=True)
+
+    frame_dict = {
+        frame["frame_id"]: frame for frame in frames
+    }
+    for candidate_index, track_candidate in enumerate(track_candidates):
+        for node in track_candidate:
+            mask_id = node.mask_id
+            frame_img = frame_dict[node.frame_id]["frame"]
+            frame_masks = frame_dict[node.frame_id]["masks"]
+            for mask in frame_masks:
+                if mask['prompt_detection_id'] == mask_id:
+                    mask_tensor = mask['mask']
+                    mask_label = mask['label']
+                    frame_img[mask_tensor.squeeze()] = [255, 0, 0]  # Red color for the mask
+                    # add text label to the top left corner of the image
+                    cv2.putText(frame_img, mask_label, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 0), 2)
+            node_id_str = f"{node_id[0]:04d}_{node_id[1]:02d}"
+            output_name = img_output_dir / f"{node_id_str}_{candidate_index:02d}_{node.frame_id}.png"
+            cv2.imwrite(str(output_name), frame_img)
+            
+    print(f"Visualized tracks saved to {img_output_dir}")
+    
 

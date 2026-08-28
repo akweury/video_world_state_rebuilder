@@ -74,6 +74,17 @@ def _mask_from_value(mask_value):
     return np.asarray(mask_value, dtype=bool)
 
 
+def _mask_to_2d(mask):
+    if mask is None:
+        return None
+    mask_array = np.asarray(mask, dtype=bool)
+    if mask_array.ndim == 3:
+        if mask_array.shape[2] == 1:
+            return mask_array[:, :, 0]
+        return np.any(mask_array, axis=2)
+    return mask_array
+
+
 def _mask_iou_numpy(left, right) -> float:
     if left is None or right is None:
         return 0.0
@@ -89,26 +100,28 @@ def _mask_iou_numpy(left, right) -> float:
 
 
 def _mask_centroid(mask):
-    if mask is None:
+    mask_array = _mask_to_2d(mask)
+    if mask_array is None:
         return None
-    ys, xs = np.where(np.asarray(mask, dtype=bool))
+    ys, xs = np.where(mask_array)
     if xs.size == 0 or ys.size == 0:
         return None
     return int(round(float(xs.mean()))), int(round(float(ys.mean())))
 
 
 def _overlay_mask(canvas, mask, color, alpha=0.45, thickness=2):
-    if mask is None:
+    mask_array = _mask_to_2d(mask)
+    if mask_array is None:
         return
-    if mask.shape[:2] != canvas.shape[:2]:
+    if mask_array.shape[:2] != canvas.shape[:2]:
         return
-    pixels = np.asarray(mask, dtype=bool)
+    pixels = mask_array
     if not np.any(pixels):
         return
     color_array = np.asarray(color, dtype=np.float32)
     blended = canvas[pixels].astype(np.float32)
     canvas[pixels] = np.clip(blended * (1.0 - alpha) + color_array * alpha, 0, 255).astype(np.uint8)
-    contours, _ = cv2.findContours(np.asarray(mask, dtype=np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(mask_array.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cv2.drawContours(canvas, contours, -1, tuple(int(value) for value in color), thickness)
 
 
@@ -116,6 +129,41 @@ def _frame_mask_lookup(frame_record):
     return {
         mask_entry["prompt_detection_id"]: _mask_from_value(mask_entry.get("mask"))
         for mask_entry in frame_record.get("masks", [])
+    }
+
+
+def _node_field(node, field_name, default=None):
+    if isinstance(node, dict):
+        return node.get(field_name, default)
+    return getattr(node, field_name, default)
+
+
+def _normalize_track_candidate(track_candidate, default_track_id):
+    if isinstance(track_candidate, dict):
+        nodes = track_candidate.get("track_nodes", [])
+        track_id = track_candidate.get("track_id", default_track_id)
+    elif isinstance(track_candidate, (list, tuple)):
+        if len(track_candidate) == 2 and isinstance(track_candidate[1], (list, tuple)) and not hasattr(track_candidate[0], "frame_id"):
+            nodes = track_candidate[1]
+        else:
+            nodes = track_candidate
+        track_id = default_track_id
+    else:
+        nodes = []
+        track_id = default_track_id
+
+    normalized_nodes = []
+    for node in nodes:
+        normalized_nodes.append(
+            {
+                "frame_id": _node_field(node, "frame_id"),
+                "mask_id": _node_field(node, "mask_id"),
+            }
+        )
+
+    return {
+        "track_id": track_id,
+        "nodes": normalized_nodes,
     }
 
 
@@ -159,6 +207,11 @@ def visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=30
         return []
 
     source_frame_names = {path.name: index for index, path in enumerate(source_frame_paths)}
+    frame_index_by_id = {
+        frame["frame_id"]: int(frame.get("frame_index", index))
+        for index, frame in enumerate(frame_order)
+        if frame.get("frame_id") is not None
+    }
     sample_frame = np.asarray(frame_order[0]["frame"])
     height, width = sample_frame.shape[:2]
     timeline_height = max(54, height // 10)
@@ -190,13 +243,19 @@ def visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=30
             continue
 
         candidate_paths = []
-        for track_candidate in track_candidates:
-            nodes = track_candidate.get("track_nodes", [])
+        for candidate_index, track_candidate in enumerate(track_candidates):
+            normalized_candidate = _normalize_track_candidate(track_candidate, track_id)
+            nodes = normalized_candidate["nodes"]
             node_map = {node.get("frame_id"): (index, node) for index, node in enumerate(nodes) if node.get("frame_id") is not None}
             candidate_paths.append({
-                "track_id": track_candidate.get("track_id", track_id),
+                "track_id": normalized_candidate["track_id"],
                 "nodes": nodes,
                 "node_map": node_map,
+                "appearance_indices": [
+                    frame_index_by_id.get(node.get("frame_id"), source_frame_names.get(Path(node.get("frame_id", "")).name, 0))
+                    for node in nodes
+                    if node.get("frame_id") is not None
+                ],
             })
 
         candidate_states = [
@@ -207,13 +266,6 @@ def visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=30
             }
             for _ in candidate_paths
         ]
-
-        appearance_frame_id = None
-        for candidate_path in candidate_paths:
-            if candidate_path["nodes"]:
-                appearance_frame_id = candidate_path["nodes"][0].get("frame_id")
-                if appearance_frame_id is not None:
-                    break
 
         for frame_path in source_frame_paths:
             frame_name = Path(frame_path).name
@@ -280,36 +332,24 @@ def visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=30
             timeline_y = timeline_height // 2
             cv2.line(timeline, (0, timeline_y), (width - 1, timeline_y), (220, 220, 220), 2)
 
-            if appearance_frame_id is not None:
-                appearance_frame = frame_by_id.get(appearance_frame_id)
-                if appearance_frame is not None:
-                    appearance_name = appearance_frame.get("frame_name")
-                    appearance_index = source_frame_names.get(appearance_name, int(appearance_frame.get("frame_index", 0)))
-                else:
-                    appearance_index = 0
-                appearance_x = int(round((appearance_index / max(1, len(frame_order) - 1)) * (width - 1)))
-                cv2.line(timeline, (appearance_x, 8), (appearance_x, timeline_height - 8), (0, 220, 0), 2)
-                cv2.putText(
-                    timeline,
-                    "appeared",
-                    (max(4, appearance_x - 26), 18),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.42,
-                    (0, 220, 0),
-                    1,
-                    cv2.LINE_AA,
-                )
+            for candidate_index, candidate_path in enumerate(candidate_paths):
+                candidate_color = candidate_palette[candidate_index % len(candidate_palette)]
+                for appearance_index in candidate_path["appearance_indices"]:
+                    appearance_x = int(round((appearance_index / max(1, len(source_frame_paths) - 1)) * (width - 1)))
+                    cv2.line(timeline, (appearance_x, 8), (appearance_x, timeline_height - 8), candidate_color, 2)
+                    cv2.circle(timeline, (appearance_x, timeline_y), 4, candidate_color, -1)
 
             current_index = source_frame_names.get(frame_name, frame_index)
             current_x = int(round((current_index / max(1, len(source_frame_paths) - 1)) * (width - 1)))
-            cv2.line(timeline, (current_x, 0), (current_x, timeline_height - 1), (0, 165, 255), 3)
+            cv2.line(timeline, (current_x, 0), (current_x, timeline_height - 1), (0, 165, 255), 4)
+            cv2.rectangle(timeline, (max(0, current_x - 24), 4), (min(width - 1, current_x + 24), 22), (0, 165, 255), -1)
             cv2.putText(
                 timeline,
-                f"frame {current_index + 1}/{len(source_frame_paths)}",
-                (10, timeline_height - 10),
+                f"current {current_index + 1}/{len(source_frame_paths)}",
+                (max(4, current_x - 42), 17),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.45,
-                (235, 235, 235),
+                0.42,
+                (20, 20, 20),
                 1,
                 cv2.LINE_AA,
             )
@@ -327,10 +367,10 @@ def visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=30
             )
             cv2.putText(
                 footer,
-                f"appeared: {appearance_frame_id if appearance_frame_id is not None else 'unknown'}",
+                "timeline: orange=current frame, track colors=appearance frames",
                 (10, 42),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.48,
+                0.42,
                 (235, 235, 235),
                 1,
                 cv2.LINE_AA,
@@ -394,10 +434,10 @@ def _track_video(tracker_model, video_data, output_dir, window_size=5, visual_fp
             serialized_tracks = pickle.load(handle)
     else:
         output_dir.mkdir(parents=True, exist_ok=True)
-        serialized_tracks = tracker_model.run(frames)
+        serialized_tracks = tracker_model.run(frames, output_dir)
         _save_tracks(video_id, serialized_tracks, output_dir, frame_name_by_index=frame_name_by_index)
 
-    visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=visual_fps)
+    # visual_tracks(video_id, serialized_tracks, output_dir, frames, visual_fps=visual_fps)
 
     return serialized_tracks
     
